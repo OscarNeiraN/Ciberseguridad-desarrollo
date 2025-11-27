@@ -12,7 +12,7 @@ pipeline {
     stages {
 
         /* ==========================
-         * CHECKOUT
+         *      CHECKOUT CÓDIGO
          * ========================== */
         stage('Checkout') {
             steps {
@@ -23,7 +23,7 @@ pipeline {
         }
 
         /* ==========================
-         * DEPENDENCIAS / VENV
+         *       VIRTUAL ENV
          * ========================== */
         stage('Install Dependencies') {
             steps {
@@ -40,16 +40,17 @@ pipeline {
         }
 
         /* ==========================
-         * BANDIT (Con bandit.yaml)
+         *      BANDIT SCAN
          * ========================== */
         stage('Bandit Security Scan') {
             steps {
                 sh """
-                    echo "Ejecutando Bandit usando bandit.yaml..."
+                    echo "Ejecutando Bandit con reportes..."
+
                     . venv/bin/activate
 
-                    bandit -c bandit.yaml -r . -f json -o bandit-report.json || true
-                    bandit -c bandit.yaml -r . -f html -o bandit-report.html || true
+                    bandit -r . -f json -o bandit-report.json || true
+                    bandit -r . -f html -o bandit-report.html || true
                 """
             }
             post {
@@ -60,7 +61,7 @@ pipeline {
         }
 
         /* ==========================
-         * SNYK CODE (SAST)
+         *      SNYK SCANS
          * ========================== */
         stage('Snyk Code Scan (SAST)') {
             steps {
@@ -68,7 +69,7 @@ pipeline {
                     echo "Autenticando Snyk..."
                     snyk auth ${SNYK_TOKEN}
 
-                    echo "Ejecutando SAST de Snyk..."
+                    echo "Ejecutando Snyk Code SAST..."
                     snyk code test --json > snyk-code.json || true
                     snyk code test --sarif > snyk-code.sarif || true
                     snyk code test --report --report-file=snyk-code.html || true
@@ -81,13 +82,10 @@ pipeline {
             }
         }
 
-        /* ==========================
-         * SNYK DEPENDENCIAS
-         * ========================== */
         stage('Snyk Dependency Scan') {
             steps {
                 sh """
-                    echo "Escaneando dependencias con Snyk..."
+                    echo "Ejecutando Snyk Dependencies..."
                     snyk test --json > snyk-deps.json || true
                     snyk test --sarif > snyk-deps.sarif || true
                 """
@@ -99,13 +97,10 @@ pipeline {
             }
         }
 
-        /* ==========================
-         * SNYK CONTENEDOR
-         * ========================== */
         stage('Snyk Container Scan') {
             steps {
                 sh """
-                    echo "Escaneo del contenedor con Snyk..."
+                    echo "Escaneo de contenedor con Snyk..."
                     docker build -t ${DOCKER_IMAGE} .
 
                     snyk container test ${DOCKER_IMAGE} --json > snyk-container.json || true
@@ -120,7 +115,7 @@ pipeline {
         }
 
         /* ==========================
-         * DOCKER PUSH
+         *     DOCKER BUILD & PUSH
          * ========================== */
         stage('Push Docker Image') {
             steps {
@@ -130,10 +125,10 @@ pipeline {
                     passwordVariable: 'DOCKER_PASS'
                 )]) {
                     sh """
-                        echo "Login Docker Hub..."
+                        echo "Haciendo login en Docker Hub..."
                         echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
 
-                        echo "Push imagen..."
+                        echo "Pushing image..."
                         docker push ${DOCKER_IMAGE}
                     """
                 }
@@ -141,21 +136,24 @@ pipeline {
         }
 
         /* ==========================
-         * DEPLOY EN EC2
+         *         DEPLOY EN EC2
          * ========================== */
         stage('Deploy to EC2') {
             steps {
                 sh """
-                    echo "Aplicando permisos a la llave..."
+                    echo "Preparando llave EC2..."
                     chmod 400 ${EC2_KEY}
 
                     echo "Desplegando en EC2..."
                     ssh -o StrictHostKeyChecking=no -i ${EC2_KEY} ${EC2_USER}@${EC2_IP} '
+                        echo "Deteniendo contenedor previo..."
                         docker stop app || true
                         docker rm app || true
 
+                        echo "Actualizando imagen..."
                         docker pull ${DOCKER_IMAGE}
 
+                        echo "Iniciando contenedor..."
                         docker run -d --name app -p 80:5000 ${DOCKER_IMAGE}
                     '
                 """
@@ -165,7 +163,7 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline finalizado. Reportes generados y guardados."
+            echo "Pipeline finalizado. Reportes Snyk y Bandit almacenados como artifacts."
         }
     }
 }
