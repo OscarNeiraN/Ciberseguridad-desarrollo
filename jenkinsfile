@@ -2,53 +2,124 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_CRED = credentials('dockerhub')
-        GITHUB_TOKEN   = credentials('github-token')
+        DOCKER_IMAGE = "oneiran/securedev:latest"
     }
 
     stages {
 
         stage('Checkout') {
             steps {
-                git branch: 'main',
-                    url: 'https://github.com/OscarNeiraN/Ciberseguridad-desarrollo.git'
+                echo "Descargando código..."
+                checkout scm
+            }
+        }
+
+        stage('Install Dependencies') {
+            steps {
+                sh """
+                    echo "Instalando dependencias Python..."
+                    python3 -m pip install --user -r requirements.txt
+                """
+            }
+        }
+
+        stage('Bandit Security Scan') {
+            steps {
+                sh """
+                    echo "Ejecutando Bandit..."
+                    ~/.local/bin/bandit -r .
+                """
+            }
+        }
+
+        stage('Snyk Auth') {
+            steps {
+                withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
+                    sh """
+                        echo "Autenticando en Snyk..."
+                        snyk auth ${SNYK_TOKEN}
+                    """
+                }
+            }
+        }
+
+        stage('Snyk Code Test') {
+            steps {
+                sh """
+                    echo "Analizando código con Snyk..."
+                    snyk code test
+                """
+            }
+        }
+
+        stage('Snyk Dependency Test') {
+            steps {
+                sh """
+                    echo "Analizando dependencias..."
+                    snyk test
+                """
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                sh '''
+                sh """
                     echo "Construyendo imagen Docker..."
-                    docker build -t oneiran/securedev:latest .
-                '''
+                    docker build -t ${DOCKER_IMAGE} .
+                """
             }
         }
 
-        stage('Push Docker Image') {
+        stage('Snyk Container Scan') {
             steps {
-                sh '''
-                    echo "$DOCKERHUB_CRED_PSW" | docker login -u "$DOCKERHUB_CRED_USR" --password-stdin
-                    docker push oneiran/securedev:latest
-                '''
+                sh """
+                    echo "Analizando imagen Docker con Snyk..."
+                    snyk container test ${DOCKER_IMAGE}
+                """
+            }
+        }
+
+        stage('Docker Login') {
+            steps {
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                    sh """
+                        echo "Autenticando con DockerHub..."
+                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                    """
+                }
+            }
+        }
+
+        stage('Publish Image') {
+            steps {
+                sh """
+                    echo "Enviando imagen a Docker Hub..."
+                    docker push ${DOCKER_IMAGE}
+                """
             }
         }
 
         stage('Deploy to EC2') {
             steps {
-                sh '''
-                    echo "Preparando llave EC2..."
-                    chmod 400 jenkins/claves-jenkins-ubuntu.pem
+                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-key', keyFileVariable: 'SSH_KEY')]) {
+                    sh """
+                        echo "Desplegando en EC2..."
 
-                    echo "Ejecutando script de despliegue..."
-                    bash jenkins/deploy.sh
-                '''
+                        ssh -o StrictHostKeyChecking=no -i $SSH_KEY ec2-user@3.239.5.93 "
+                            sudo docker stop app || true
+                            sudo docker rm app || true
+                            sudo docker pull ${DOCKER_IMAGE}
+                            sudo docker run -d --name app -p 80:5000 ${DOCKER_IMAGE}
+                        "
+                    """
+                }
             }
         }
     }
 
     post {
         always {
-            sh 'echo "Pipeline finalizado."'
+            echo "Pipeline finalizado."
         }
     }
 }
