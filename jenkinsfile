@@ -2,115 +2,54 @@ pipeline {
     agent any
 
     environment {
-        VENV = "venv"
-    }
+        DOCKERHUB_USER = credentials('dockerhub-user')       // usuario
+        DOCKERHUB_PASS = credentials('dockerhub-pass')       // contraseña
+        GIT_TOKEN      = credentials('github-token')         // tu PAT de GitHub
+        IMAGE          = "oneiran/SecureDev:latest"
 
-    options {
-        timestamps()          
-        ansiColor('xterm')    
+        EC2_USER = "ec2-user"
+        EC2_IP   = "3.239.5.93"
+        EC2_KEY  = "jenkins/claves-jenkins-ubuntu.pem"
     }
 
     stages {
 
-        stage('Prepare') {
+        stage('Checkout') {
             steps {
-                echo "Creando entorno virtual y actualizando pip..."
+                git branch: 'main',
+                    url: "https://oauth2:${GIT_TOKEN}@github.com/oneiran/vulnerable-app.git"
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
                 sh """
-                    python3 -m venv $VENV
-                    . $VENV/bin/activate
-                    pip install --upgrade pip wheel setuptools
+                    docker build -t ${IMAGE} .
                 """
             }
         }
 
-        stage('Install Dependencies') {
+        stage('Login to DockerHub') {
             steps {
-                echo "Instalando dependencias..."
                 sh """
-                    . $VENV/bin/activate
-                    pip install -r requirements.txt
+                    echo "${DOCKERHUB_PASS}" | docker login -u "${DOCKERHUB_USER}" --password-stdin
                 """
             }
         }
 
-        stage('Unit Tests') {
+        stage('Push Image to DockerHub') {
             steps {
-                echo "Ejecutando tests..."
                 sh """
-                    . $VENV/bin/activate
-                    pytest --maxfail=1 --disable-warnings --cache-clear || true
+                    docker push ${IMAGE}
                 """
-            }
-            post {
-                always {
-                    junit '**/pytest-report.xml'
-                }
-            }
-        }
-
-        stage('Security Scan - Bandit') {
-            steps {
-                echo "Ejecutando análisis SAST (Bandit)..."
-                sh """
-                    . $VENV/bin/activate
-                    pip install bandit
-                    bandit -r . -f json -o bandit_report.json || true
-                """
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'bandit_report.json'
-                }
-            }
-        }
-
-        stage('Security Scan - Safety') {
-            steps {
-                echo "Analizando dependencias vulnerables..."
-                sh """
-                    . $VENV/bin/activate
-                    pip install safety
-                    safety check -o safety_report.txt || true
-                """
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'safety_report.txt'
-                }
-            }
-        }
-
-        stage('Build Flask App') {
-            steps {
-                echo "Verificando estructura del proyecto Flask..."
-                sh """
-                    . $VENV/bin/activate
-                    python -m py_compile vulnerable_app.py
-                """
-            }
-        }
-
-        stage('Package') {
-            steps {
-                echo "Empaquetando aplicación para despliegue..."
-                sh """
-                    mkdir -p dist
-                    cp -r vulnerable_app.py templates static requirements.txt dist/
-                """
-            }
-            post {
-                always {
-                    archiveArtifacts artifacts: 'dist/**'
-                }
             }
         }
 
         stage('Deploy to EC2') {
             steps {
-                echo "Desplegando aplicación Flask a AWS EC2..."
                 sh """
-                    scp -o StrictHostKeyChecking=no -i /path/to/key.pem -r dist/* ec2-user@EC2_PUBLIC_IP:/var/www/flaskapp/
-                    ssh -o StrictHostKeyChecking=no -i /path/to/key.pem ec2-user@EC2_PUBLIC_IP 'sudo systemctl restart flaskapp'
+                    chmod +x jenkins/deploy.sh
+                    sh jenkins/deploy.sh
                 """
             }
         }
@@ -118,8 +57,13 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline completado. Limpiando entorno virtual."
-            sh "rm -rf $VENV"
+            sh 'docker logout'
+        }
+        success {
+            echo 'Despliegue completado con éxito en EC2!'
+        }
+        failure {
+            echo 'El pipeline falló.'
         }
     }
 }
