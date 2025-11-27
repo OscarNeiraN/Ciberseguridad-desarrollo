@@ -31,7 +31,7 @@ pipeline {
                     python3 -m venv venv
 
                     echo "Activando entorno virtual..."
-                    source venv/bin/activate
+                    . venv/bin/activate
 
                     echo "Instalando dependencias..."
                     pip install --upgrade pip
