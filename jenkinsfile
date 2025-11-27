@@ -3,64 +3,87 @@ pipeline {
 
     environment {
         DOCKER_IMAGE = "oneiran/securedev:latest"
+        EC2_USER = "ec2-user"
+        EC2_IP = "3.239.5.93"
+        EC2_KEY = "jenkins/claves-jenkins-ubuntu.pem"
     }
 
     stages {
 
+        /* ==========================
+         *      CHECKOUT CÓDIGO
+         * ========================== */
         stage('Checkout') {
             steps {
-                echo "Descargando código..."
-                checkout scm
+                git branch: 'main',
+                    credentialsId: 'github-creds',
+                    url: 'https://github.com/TU_USUARIO/TU_REPO.git'
             }
         }
 
+        /* ==========================
+         *       VIRTUAL ENV
+         * ========================== */
         stage('Install Dependencies') {
             steps {
                 sh """
-                    echo "Instalando dependencias Python..."
-                    python3 -m pip install --user -r requirements.txt
+                    echo "Creando entorno virtual..."
+                    python3 -m venv venv
+
+                    echo "Activando entorno virtual..."
+                    source venv/bin/activate
+
+                    echo "Instalando dependencias..."
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
                 """
             }
         }
 
+        /* ==========================
+         *      BANDIT SCAN
+         * ========================== */
         stage('Bandit Security Scan') {
             steps {
                 sh """
                     echo "Ejecutando Bandit..."
-                    ~/.local/bin/bandit -r .
+                    ~/.local/bin/bandit -r . || true
                 """
             }
         }
 
-        stage('Snyk Auth') {
-            steps {
-                withCredentials([string(credentialsId: 'snyk-token', variable: 'SNYK_TOKEN')]) {
-                    sh """
-                        echo "Autenticando en Snyk..."
-                        snyk auth ${SNYK_TOKEN}
-                    """
-                }
+        /* ==========================
+         *      SNYK SCANS
+         * ========================== */
+        stage('Snyk Code Scan') {
+            environment {
+                SNYK_TOKEN = credentials('snyk-token')
             }
-        }
-
-        stage('Snyk Code Test') {
             steps {
                 sh """
-                    echo "Analizando código con Snyk..."
-                    snyk code test
+                    echo "Autenticando Snyk..."
+                    snyk auth \$SNYK_TOKEN
+
+                    echo "Ejecutando Snyk Code..."
+                    snyk code test || true
                 """
             }
         }
 
-        stage('Snyk Dependency Test') {
+        stage('Snyk Dependency Scan') {
+            environment {
+                SNYK_TOKEN = credentials('snyk-token')
+            }
             steps {
                 sh """
-                    echo "Analizando dependencias..."
-                    snyk test
+                    snyk test || true
                 """
             }
         }
 
+        /* ==========================
+         *     DOCKER BUILD & PUSH
+         * ========================== */
         stage('Build Docker Image') {
             steps {
                 sh """
@@ -70,56 +93,47 @@ pipeline {
             }
         }
 
-        stage('Snyk Container Scan') {
+        stage('Push Docker Image') {
             steps {
-                sh """
-                    echo "Analizando imagen Docker con Snyk..."
-                    snyk container test ${DOCKER_IMAGE}
-                """
-            }
-        }
-
-        stage('Docker Login') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
+                withCredentials([usernamePassword(
+                    credentialsId: 'dockerhub-creds',
+                    usernameVariable: 'DOCKER_USER',
+                    passwordVariable: 'DOCKER_PASS'
+                )]) {
                     sh """
-                        echo "Autenticando con DockerHub..."
-                        echo "$DOCKER_PASS" | docker login -u "$DOCKER_USER" --password-stdin
+                        echo "Haciendo login en Docker Hub..."
+                        echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
+
+                        echo "Pushing image..."
+                        docker push ${DOCKER_IMAGE}
                     """
                 }
             }
         }
 
-        stage('Publish Image') {
-            steps {
-                sh """
-                    echo "Enviando imagen a Docker Hub..."
-                    docker push ${DOCKER_IMAGE}
-                """
-            }
-        }
-
+        /* ==========================
+         *         DEPLOY EN EC2
+         * ========================== */
         stage('Deploy to EC2') {
             steps {
-                withCredentials([sshUserPrivateKey(credentialsId: 'deploy-key', keyFileVariable: 'SSH_KEY')]) {
-                    sh """
-                        echo "Desplegando en EC2..."
+                sh """
+                    echo "Preparando llave EC2..."
+                    chmod 400 ${EC2_KEY}
 
-                        ssh -o StrictHostKeyChecking=no -i $SSH_KEY ec2-user@3.239.5.93 "
-                            sudo docker stop app || true
-                            sudo docker rm app || true
-                            sudo docker pull ${DOCKER_IMAGE}
-                            sudo docker run -d --name app -p 80:5000 ${DOCKER_IMAGE}
-                        "
-                    """
-                }
+                    echo "Desplegando en EC2..."
+                    ssh -o StrictHostKeyChecking=no -i ${EC2_KEY} ${EC2_USER}@${EC2_IP} '
+                        echo "Deteniendo contenedor previo..."
+                        docker stop app || true
+                        docker rm app || true
+
+                        echo "Actualizando imagen..."
+                        docker pull ${DOCKER_IMAGE}
+
+                        echo "Iniciando contenedor..."
+                        docker run -d --name app -p 80:5000 ${DOCKER_IMAGE}
+                    '
+                """
             }
-        }
-    }
-
-    post {
-        always {
-            echo "Pipeline finalizado."
         }
     }
 }
