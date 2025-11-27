@@ -2,14 +2,8 @@ pipeline {
     agent any
 
     environment {
-        DOCKERHUB_USER = credentials('dockerhub-user')       // usuario
-        DOCKERHUB_PASS = credentials('dockerhub-pass')       // contraseña
-        GIT_TOKEN      = credentials('github-token')         // tu PAT de GitHub
-        IMAGE          = "oneiran/SecureDev:latest"
-
-        EC2_USER = "ec2-user"
-        EC2_IP   = "3.239.5.93"
-        EC2_KEY  = "jenkins/claves-jenkins-ubuntu.pem"
+        DOCKERHUB_CRED = credentials('dockerhub')
+        GITHUB_TOKEN   = credentials('github-token')
     }
 
     stages {
@@ -17,53 +11,44 @@ pipeline {
         stage('Checkout') {
             steps {
                 git branch: 'main',
-                    url: "https://oauth2:${GIT_TOKEN}@github.com/oneiran/vulnerable-app.git"
+                    url: 'https://github.com/TU_USUARIO/TU_REPO.git'
             }
         }
 
         stage('Build Docker Image') {
             steps {
-                sh """
-                    docker build -t ${IMAGE} .
-                """
+                sh '''
+                    echo "Construyendo imagen Docker..."
+                    docker build -t oneiran/securedev:latest .
+                '''
             }
         }
 
-        stage('Login to DockerHub') {
+        stage('Push Docker Image') {
             steps {
-                sh """
-                    echo "${DOCKERHUB_PASS}" | docker login -u "${DOCKERHUB_USER}" --password-stdin
-                """
-            }
-        }
-
-        stage('Push Image to DockerHub') {
-            steps {
-                sh """
-                    docker push ${IMAGE}
-                """
+                sh '''
+                    echo "$DOCKERHUB_CRED_PSW" | docker login -u "$DOCKERHUB_CRED_USR" --password-stdin
+                    docker push oneiran/securedev:latest
+                '''
             }
         }
 
         stage('Deploy to EC2') {
             steps {
-                sh """
-                    chmod +x jenkins/deploy.sh
-                    sh jenkins/deploy.sh
-                """
+                sh '''
+                    echo "Preparando llave EC2..."
+                    chmod 400 jenkins/claves-jenkins-ubuntu.pem
+
+                    echo "Ejecutando script de despliegue..."
+                    bash jenkins/deploy.sh
+                '''
             }
         }
     }
 
     post {
         always {
-            sh 'docker logout'
-        }
-        success {
-            echo 'Despliegue completado con éxito en EC2!'
-        }
-        failure {
-            echo 'El pipeline falló.'
+            sh 'echo "Pipeline finalizado."'
         }
     }
 }
