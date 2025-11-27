@@ -1,0 +1,8 @@
+exclude:
+  - venv
+  - tests
+  - __pycache__
+  - migrations
+
+skips:
+  - B101
