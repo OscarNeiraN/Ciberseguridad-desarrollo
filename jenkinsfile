@@ -17,7 +17,7 @@ pipeline {
             steps {
                 git branch: 'main',
                     credentialsId: 'github-creds',
-                    url: 'https://github.com/TU_USUARIO/TU_REPO.git'
+                    url: 'https://github.com/OscarNeiraN/Ciberseguridad-desarrollo.git'
             }
         }
 
