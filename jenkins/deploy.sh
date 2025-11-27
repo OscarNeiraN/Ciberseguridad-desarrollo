@@ -3,7 +3,7 @@
 EC2_USER="ec2-user"
 EC2_IP="3.239.5.93"
 EC2_KEY="jenkins/claves-jenkins-ubuntu.pem"
-IMAGE="oneiran/SecureDev:latest"
+IMAGE="oneiran/securedev:latest"
 
 chmod 600 $EC2_KEY
 
