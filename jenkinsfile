@@ -114,11 +114,35 @@ pipeline {
             }
         }
 
-        
         /* ==========================
-         *      BUILD DOCKER IMAGE AND PUSH
+         *         OWASP ZAP
          * ========================== */
-        
+        stage('OWASP ZAP Baseline Scan') {
+            steps {
+                sh """
+                    echo "Iniciando aplicación Flask temporalmente..."
+                    . venv/bin/activate
+                    nohup python3 app.py > flask.log 2>&1 &
+                    sleep 7
+                    
+                    echo "Ejecutando OWASP ZAP Baseline Scan..."
+                    docker run --rm -v \$(pwd):/zap/wrk/:rw \
+                        owasp/zap2docker-weekly zap-baseline.py \
+                        -t http://127.0.0.1:5000 \
+                        -r zap_report.html \
+                        -J zap_report.json || true
+                """
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'zap_report.*', fingerprint: true
+                }
+            }
+        }
+
+        /* ==========================
+         *      PUSH DOCKER IMAGE
+         * ========================== */
         stage('Push Docker Image') {
             steps {
                 withCredentials([usernamePassword(
@@ -165,7 +189,7 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline finalizado. Reportes Snyk y Bandit almacenados como artifacts."
+            echo "Pipeline finalizado. Reportes Bandit, Snyk y OWASP ZAP almacenados como artifacts."
         }
     }
 }
