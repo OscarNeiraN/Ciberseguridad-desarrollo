@@ -4,7 +4,7 @@ pipeline {
     environment {
         DOCKER_IMAGE = "oneiran/securedev:latest"
         EC2_USER = "ec2-user"
-        EC2_IP = "44.211.117.60"
+        EC2_IP = "3.239.5.93"
         EC2_KEY = "jenkins/claves-jenkins-ubuntu.pem"
         SNYK_TOKEN = credentials('snyk-token')
     }
@@ -12,7 +12,7 @@ pipeline {
     stages {
 
         /* ==========================
-         * CHECKOUT
+         *      CHECKOUT
          * ========================== */
         stage('Checkout') {
             steps {
@@ -23,7 +23,7 @@ pipeline {
         }
 
         /* ==========================
-         * VIRTUAL ENV
+         *      VIRTUAL ENV
          * ========================== */
         stage('Install Dependencies') {
             steps {
@@ -32,21 +32,24 @@ pipeline {
                     python3 -m venv venv
 
                     echo "Instalando dependencias..."
-                    ./venv/bin/pip install --upgrade pip
-                    ./venv/bin/pip install -r requirements.txt
+                    . venv/bin/activate
+                    pip install --upgrade pip
+                    pip install -r requirements.txt
                 """
             }
         }
 
+
         /* ==========================
-         * BANDIT
+         *      BANDIT
          * ========================== */
         stage('Bandit Security Scan') {
             steps {
                 sh """
+                    . venv/bin/activate
                     echo "Ejecutando Bandit..."
-                    ./venv/bin/bandit -r . -f json -o bandit-report.json || true
-                    ./venv/bin/bandit -r . -f html -o bandit-report.html || true
+                    bandit -r . -f json -o bandit-report.json || true
+                    bandit -r . -f html -o bandit-report.html || true
                 """
             }
             post {
@@ -56,13 +59,16 @@ pipeline {
             }
         }
 
+
+
         /* ==========================
-         * SNYK CODE
+         *      SNYK CODE
          * ========================== */
         stage('Snyk Code Scan (SAST)') {
             steps {
                 sh """
                     snyk auth ${SNYK_TOKEN}
+
                     echo "Ejecutando Snyk Code..."
                     snyk code test --json > snyk-code.json || true
                     snyk code test --sarif > snyk-code.sarif || true
@@ -75,8 +81,9 @@ pipeline {
             }
         }
 
+
         /* ==========================
-         * SNYK DEPENDENCIAS
+         *      SNYK DEPENDENCIAS
          * ========================== */
         stage('Snyk Dependency Scan') {
             steps {
@@ -93,13 +100,16 @@ pipeline {
             }
         }
 
+
+
         /* ==========================
-         * SNYK CONTENEDOR
+         *      SNYK CONTENEDOR
          * ========================== */
         stage('Snyk Container Scan') {
             steps {
                 sh """
                     docker build -t ${DOCKER_IMAGE} .
+
                     snyk container test ${DOCKER_IMAGE} --json > snyk-container.json || true
                     snyk container test ${DOCKER_IMAGE} --sarif > snyk-container.sarif || true
                 """
@@ -111,59 +121,54 @@ pipeline {
             }
         }
 
+
+
         /* ==========================
-         * OWASP ZAP (CORREGIDO)
+         *      OWASP ZAP FIXED
          * ========================== */
         stage('OWASP ZAP Baseline Scan') {
             steps {
                 sh """
                     echo "Iniciando aplicación Flask temporal..."
-                    nohup ./venv/bin/python app.py > flask.log 2>&1 &
-                    echo $! > flask.pid
+                    . venv/bin/activate
 
-                    echo "Esperando que Flask inicie (máximo 40 segundos)..."
-                    CURL_TARGET="http://127.0.0.1:5000"
+                    nohup python3 app.py > flask.log 2>&1 &
+
+                    echo "Esperando que Flask inicie..."
                     for i in {1..20}; do
-                        if curl -s "$CURL_TARGET" >/dev/null; then
-                            echo "Flask está corriendo después de $((i * 2)) segundos."
-                            READY=1
+                        if curl -s http://0.0.0.0:5000/ >/dev/null; then
+                            echo "Flask está corriendo!"
                             break
                         fi
-                        echo "Esperando... $i"
+                        echo "Esperando... \$i"
                         sleep 2
                     done
 
-                    if [ "${READY:-0}" -eq 1 ]; then
-                        echo "Ejecutando ZAP..."
-                        docker run --rm --network=host \\
-                            -v "$(pwd)":/zap/wrk/:rw \\
-                            ghcr.io/zaproxy/zaproxy:stable \\
-                            zap-baseline.py \\
-                            -t "$CURL_TARGET" \\
-                            -r /zap/wrk/zap_report.html \\
-                            -J /zap/wrk/zap_report.json || true
-                    else
-                        echo "ADVERTENCIA: Flask no respondió en 40s. Saltando ZAP."
-                    fi
+                    echo "Ajustando permisos..."
+                    chmod 777 \$(pwd) || true
+                    chmod 777 \$(pwd)/* || true
+
+                    echo "Ejecutando ZAP..."
+                    docker run --rm --network=host \
+                        -v \$(pwd):/zap/wrk/:rw \
+                        ghcr.io/zaproxy/zaproxy:stable \
+                        zap-baseline.py \
+                        -t http://0.0.0.0:5000 \
+                        -r zap_report.html \
+                        -J zap_report.json || true
                 """
             }
             post {
                 always {
-                    sh """
-                        if [ -f flask.pid ]; then
-                            PID=\$(cat flask.pid)
-                            echo "Deteniendo Flask PID: \$PID"
-                            kill "\$PID" || true
-                            rm -f flask.pid
-                        fi
-                    """
-                    archiveArtifacts artifacts: 'zap_report.*, flask.log', fingerprint: true
+                    archiveArtifacts artifacts: 'zap_report.*', fingerprint: true
                 }
             }
         }
 
+
+
         /* ==========================
-         * PUSH DOCKER
+         *      PUSH DOCKER
          * ========================== */
         stage('Push Docker Image') {
             steps {
@@ -180,18 +185,20 @@ pipeline {
             }
         }
 
+
         /* ==========================
-         * DEPLOY EN EC2
+         *      DEPLOY EN EC2
          * ========================== */
         stage('Deploy to EC2') {
             steps {
                 sh """
                     chmod 400 ${EC2_KEY}
+
                     ssh -o StrictHostKeyChecking=no -i ${EC2_KEY} ${EC2_USER}@${EC2_IP} '
                         docker stop app || true
                         docker rm app || true
                         docker pull ${DOCKER_IMAGE}
-                        docker run -d --restart always --name app -p 80:5000 ${DOCKER_IMAGE}
+                        docker run -d --name app -p 80:5000 ${DOCKER_IMAGE}
                     '
                 """
             }
