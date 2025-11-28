@@ -121,43 +121,65 @@ pipeline {
                     CURL_TARGET="http://127.0.0.1:5000"
                     PYTHON_EXE="./venv/bin/python3"
                     
-                    echo "1. Creando usuario de prueba en la base de datos (Antes de iniciar Flask)..."
-                    # Asegura que el directorio 'instance' exista
-                    mkdir -p instance || true 
+                    echo "1. Creando y poblando la base de datos (database.db)..."
                     
-                    # Script para crear/insertar el usuario de prueba
+                    # Script para crear/insertar los usuarios de prueba
                     \${PYTHON_EXE} - <<'EOF_PYTHON_SCRIPT'
 import sqlite3
 import hashlib
 import time
 import os
 
-DB_PATH = 'instance/app.db'
-USER_EMAIL = 'testuser@zap.com'
-# La contraseña que ZAP usará al enviar el formulario (plano)
+# ATENCIÓN: El código Flask usa 'database.db' en la raíz.
+DB_PATH = 'database.db' 
+USER_NAME = 'testuser_zap'
 USER_PASS_PLAN = 'TestPassword123' 
-# **IMPORTANTE**: Sustituye esta lógica de hashing con la que use tu app (ej: bcrypt)
-# Aquí usamos SHA256 solo como ejemplo de un hash simple.
-USER_PASS_HASH = hashlib.sha256(USER_PASS_PLAN.encode('utf-8')).hexdigest()
+DEFAULT_PASS_PLAN = 'password'
 
-# No sleep needed here, as Flask is not running yet.
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+USER_PASS_HASH = hash_password(USER_PASS_PLAN)
+DEFAULT_PASS_HASH = hash_password(DEFAULT_PASS_PLAN)
+
 conn = None
 try:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    # Asume una tabla de 'users' con 'email' y 'password'
+    
+    # Crear la tabla de usuarios
     c.execute(\"\"\"
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY,
-            email TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'user'
         );
     \"\"\")
-    # Insertar al usuario de prueba (usando el hash)
-    c.execute("INSERT OR IGNORE INTO users (email, password) VALUES (?, ?)",
-              (USER_EMAIL, USER_PASS_HASH))
+    
+    # Crear la tabla de tareas
+    c.execute(\"\"\"
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            task TEXT NOT NULL,
+            FOREIGN KEY(user_id) REFERENCES users(id)
+        );
+    \"\"\")
+    
+    # Insertar usuario para ZAP (Test user)
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)",
+              (USER_NAME, USER_PASS_HASH, 'user'))
+              
+    # Insertar usuarios por defecto del script (admin y user), usando INSERT OR IGNORE
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)",
+              ('admin', DEFAULT_PASS_HASH, 'admin'))
+              
+    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)",
+              ('user', DEFAULT_PASS_HASH, 'user'))
+              
     conn.commit()
-    print(f"Usuario {USER_EMAIL} asegurado en la DB.")
+    print(f"Base de datos y usuarios poblados en {DB_PATH}.")
 except sqlite3.OperationalError as e:
     print(f"Error al acceder a la base de datos: {e}. ¿La ruta de DB es correcta?")
 finally:
@@ -200,17 +222,17 @@ env:
       method: formBasedAuthentication
       parameters:
         loginPageUrl: \${CURL_TARGET}/login
-        # Parámetros del formulario: email y password (ZAP envía la contraseña plana)
-        loginPostData: "email={%email%}&password={%password%}"
+        # Usando 'username' y 'password' para el formulario de login
+        loginPostData: "username={%username%}&password={%password%}"
       verification:
-        # Busca un texto en el dashboard para confirmar login exitoso
+        # Busca el texto 'Welcome, user' en el dashboard para confirmar login exitoso
         method: response
-        loggedInRegex: 'Dashboard' 
-        # Si tu app usa 'Panel de Tareas' usa: loggedInRegex: 'Panel de Tareas'
+        loggedInRegex: 'Welcome, user' 
     users:
       - name: testuser
         credentials:
-          email: testuser@zap.com
+          # Usando el usuario creado específicamente para ZAP
+          username: testuser_zap
           password: TestPassword123
 jobs:
 # 1. Spider (Rastreo) Autenticado
@@ -266,6 +288,8 @@ EOF_YAML
                             kill "\$PID" || true
                             rm -f flask.pid
                         fi
+                        # Limpiar database.db para el siguiente build
+                        rm -f database.db || true
                     """
                     archiveArtifacts artifacts: 'zap_report.*, flask.log', fingerprint: true
                 }
