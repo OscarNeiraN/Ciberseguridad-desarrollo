@@ -12,7 +12,7 @@ pipeline {
     stages {
 
         /* ==========================
-         *      CHECKOUT CÓDIGO
+         *      CHECKOUT
          * ========================== */
         stage('Checkout') {
             steps {
@@ -23,7 +23,7 @@ pipeline {
         }
 
         /* ==========================
-         *       VIRTUAL ENV
+         *      VIRTUAL ENV
          * ========================== */
         stage('Install Dependencies') {
             steps {
@@ -40,15 +40,14 @@ pipeline {
         }
 
         /* ==========================
-         *      BANDIT SCAN
+         *      BANDIT
          * ========================== */
         stage('Bandit Security Scan') {
             steps {
                 sh """
-                    echo "Ejecutando Bandit con reportes..."
-
                     . venv/bin/activate
 
+                    echo "Ejecutando Bandit..."
                     bandit -r . -f json -o bandit-report.json || true
                     bandit -r . -f html -o bandit-report.html || true
                 """
@@ -61,7 +60,7 @@ pipeline {
         }
 
         /* ==========================
-         *      SNYK SCANS
+         *      SNYK CODE (SAST)
          * ========================== */
         stage('Snyk Code Scan (SAST)') {
             steps {
@@ -82,6 +81,9 @@ pipeline {
             }
         }
 
+        /* ==========================
+         *      SNYK DEPENDENCIAS
+         * ========================== */
         stage('Snyk Dependency Scan') {
             steps {
                 sh """
@@ -97,12 +99,16 @@ pipeline {
             }
         }
 
+        /* ==========================
+         *      SNYK CONTENEDOR
+         * ========================== */
         stage('Snyk Container Scan') {
             steps {
                 sh """
-                    echo "Escaneo de contenedor con Snyk..."
+                    echo "Construyendo imagen..."
                     docker build -t ${DOCKER_IMAGE} .
 
+                    echo "Ejecutando Snyk Container..."
                     snyk container test ${DOCKER_IMAGE} --json > snyk-container.json || true
                     snyk container test ${DOCKER_IMAGE} --sarif > snyk-container.sarif || true
                 """
@@ -115,20 +121,24 @@ pipeline {
         }
 
         /* ==========================
-         *         OWASP ZAP
+         *      OWASP ZAP
          * ========================== */
         stage('OWASP ZAP Baseline Scan') {
             steps {
                 sh """
-                    echo "Iniciando aplicación Flask temporalmente..."
+                    echo "Iniciando aplicación Flask temporal..."
                     . venv/bin/activate
+
+                    # Ejecutar Flask en background
                     nohup python3 app.py > flask.log 2>&1 &
                     sleep 15
 
-                    echo "Ejecutando OWASP ZAP Baseline Scan..."
+                    echo "Ajustando permisos para ZAP..."
+                    chmod 777 \$(pwd)
+                    chmod 777 \$(pwd)/* || true
 
-                    docker run --rm \
-                        --network=host \
+                    echo "Ejecutando ZAP Baseline..."
+                    docker run --rm --network=host \
                         -v \$(pwd):/zap/wrk/:rw \
                         ghcr.io/zaproxy/zaproxy:stable \
                         zap-baseline.py \
@@ -145,7 +155,7 @@ pipeline {
         }
 
         /* ==========================
-         *      PUSH DOCKER IMAGE
+         *      PUSH DOCKER
          * ========================== */
         stage('Push Docker Image') {
             steps {
@@ -155,10 +165,10 @@ pipeline {
                     passwordVariable: 'DOCKER_PASS'
                 )]) {
                     sh """
-                        echo "Haciendo login en Docker Hub..."
+                        echo "Login Docker Hub..."
                         echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
 
-                        echo "Pushing image..."
+                        echo "Push de imagen..."
                         docker push ${DOCKER_IMAGE}
                     """
                 }
@@ -166,24 +176,20 @@ pipeline {
         }
 
         /* ==========================
-         *         DEPLOY EN EC2
+         *      DEPLOY EN EC2
          * ========================== */
         stage('Deploy to EC2') {
             steps {
                 sh """
-                    echo "Preparando llave EC2..."
                     chmod 400 ${EC2_KEY}
 
-                    echo "Desplegando en EC2..."
+                    echo "Conectando a EC2..."
                     ssh -o StrictHostKeyChecking=no -i ${EC2_KEY} ${EC2_USER}@${EC2_IP} '
-                        echo "Deteniendo contenedor previo..."
                         docker stop app || true
                         docker rm app || true
 
-                        echo "Actualizando imagen..."
                         docker pull ${DOCKER_IMAGE}
 
-                        echo "Iniciando contenedor..."
                         docker run -d --name app -p 80:5000 ${DOCKER_IMAGE}
                     '
                 """
@@ -193,7 +199,7 @@ pipeline {
 
     post {
         always {
-            echo "Pipeline finalizado. Reportes Bandit, Snyk y OWASP ZAP almacenados como artifacts."
+            echo "Pipeline completado con éxito. Todos los reportes están archivados."
         }
     }
 }
