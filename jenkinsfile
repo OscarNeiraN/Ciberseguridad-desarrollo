@@ -126,9 +126,9 @@ pipeline {
 
 
         /* ==========================
-         * OWASP ZAP (CORREGIDO Y ROBUSTO)
+         * OWASP ZAP FULL SCAN (ACTIVO)
          * ========================== */
-        stage('OWASP ZAP Baseline Scan') {
+        stage('OWASP ZAP Full Scan') {
             steps {
                 sh """
                     # 1. Iniciando Flask con el intérprete del venv (más robusto)
@@ -155,21 +155,24 @@ pipeline {
                         sleep 2
                     done
                     
-                    # 3. Ejecución condicional de ZAP
+                    # 3. Ejecución condicional de ZAP Full Scan
                     if [ "\$FLASK_READY" = "true" ]; then
                         echo "Ajustando permisos..."
                         chmod 777 \$(pwd) || true
                         chmod 777 \$(pwd)/* || true
 
-                        echo "Ejecutando ZAP..."
+                        echo "Ejecutando ZAP FULL SCAN (Ataque Activo)..."
                         # Se usa 127.0.0.1 para acceder al host
                         docker run --rm --network=host \
                             -v \$(pwd):/zap/wrk/:rw \
                             ghcr.io/zaproxy/zaproxy:stable \
-                            zap-baseline.py \
+                            zap-full-scan.py \
                             -t \$CURL_TARGET \
                             -r zap_report.html \
-                            -J zap_report.json || true
+                            -J zap_report.json \
+                            -I || true
+                            
+                        # NOTA: El flag -I es importante para que no aborte el build por alertas menores
                     else
                         echo "ADVERTENCIA: Flask no se inició correctamente o no respondió después de 40s. Saltando escaneo ZAP."
                     fi
