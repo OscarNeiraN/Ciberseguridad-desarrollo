@@ -294,6 +294,14 @@ EOF_YAML
                             ghcr.io/zaproxy/zaproxy:stable \
                             zap.sh -cmd -autorun /zap/wrk/zap.yaml || true
                     else
+                        echo "========================================="
+                        echo "DIAGNÓSTICO: El servidor Flask no respondió. Revisando flask.log..."
+                        if [ -f flask.log ]; then
+                            cat flask.log
+                        else
+                            echo "ERROR: flask.log no encontrado."
+                        fi
+                        echo "========================================="
                         echo "ADVERTENCIA: Flask no respondió. Saltando ZAP."
                     fi
                 """
