@@ -198,15 +198,22 @@ EOF_PYTHON_SCRIPT
                     
                     echo "3. Esperando que Flask inicie (Máx 40s)..."
                     READY=0
-                    for i in {1..20}; do
+                    TIMEOUT=20 # 20 intentos * 2 segundos = 40 segundos max
+                    COUNT=0
+                    
+                    # BUCLE WHILE ROBUSTO PARA VERIFICAR LA DISPONIBILIDAD
+                    while [ \$COUNT -lt \$TIMEOUT ]; do
                         if curl -s \${APP_URL} >/dev/null; then
                             echo "Flask está corriendo!"
                             READY=1
                             break
                         fi
-                        echo "Esperando... \$i"
+                        
+                        COUNT=\$((COUNT + 1))
+                        echo "Esperando... (\$COUNT/\$TIMEOUT)"
                         sleep 2
                     done
+                    # FIN DEL BUCLE WHILE
 
                     if [ "\${READY}" -eq 1 ]; then
                         
