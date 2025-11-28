@@ -114,9 +114,11 @@ pipeline {
             }
         }
 
+        
         /* ==========================
-         *     DOCKER BUILD & PUSH
+         *      BUILD DOCKER IMAGE AND PUSH
          * ========================== */
+        
         stage('Push Docker Image') {
             steps {
                 withCredentials([usernamePassword(
