@@ -112,70 +112,122 @@ pipeline {
         }
 
         /* ==========================
-         * OWASP ZAP ACTIVE SCAN + AUTH
+         * OWASP ZAP ACTIVE SCAN + AUTH (CORREGIDO)
          * ========================== */
         stage('OWASP ZAP Active Scan') {
             steps {
                 sh """
-                    echo "Iniciando aplicación Flask temporal..."
-                    nohup ./venv/bin/python app.py > flask.log 2>&1 &
-                    echo $! > flask.pid
-
-                    echo "Esperando que Flask inicie..."
+                    # 0. Definir variables y path del intérprete
                     CURL_TARGET="http://127.0.0.1:5000"
+                    PYTHON_EXE="./venv/bin/python3"
+                    
+                    echo "Iniciando aplicación Flask temporal..."
+                    # Iniciar la aplicación y capturar el PID
+                    nohup \${PYTHON_EXE} app.py > flask.log 2>&1 &
+                    echo \$! > flask.pid
+                    
+                    echo "Esperando que Flask inicie (Máx 40s)..."
+                    READY=0
                     for i in {1..20}; do
-                        if curl -s "$CURL_TARGET" >/dev/null; then
+                        if curl -s \$CURL_TARGET >/dev/null; then
                             echo "Flask está corriendo!"
                             READY=1
                             break
                         fi
+                        echo "Esperando... \$i"
                         sleep 2
                     done
 
-                    if [ "${READY:-0}" -eq 1 ]; then
-                        echo "Creando usuario de prueba en la base de datos..."
-                        ./venv/bin/python3 - <<'EOF'
+                    if [ "\${READY}" -eq 1 ]; then
+                        echo "1. Creando usuario de prueba en la base de datos..."
+                        # Asegura que el directorio 'instance' exista antes de acceder a la DB
+                        mkdir -p instance || true 
+                        
+                        # Script para crear/insertar el usuario de prueba
+                        \${PYTHON_EXE} - <<'EOF_PYTHON_SCRIPT'
 import sqlite3
-conn = sqlite3.connect('instance/app.db')
-c = conn.cursor()
-c.execute("INSERT OR IGNORE INTO users (email, password) VALUES (?, ?)",
-          ("testuser@example.com", "TestPassword123"))
-conn.commit()
-conn.close()
-EOF
+import hashlib
+import time
+import os
 
-                        echo "Generando zap.yaml..."
-                        cat > zap.yaml <<EOF
+DB_PATH = 'instance/app.db'
+USER_EMAIL = 'testuser@zap.com'
+# La contraseña que ZAP usará al enviar el formulario (plano)
+USER_PASS_PLAN = 'TestPassword123' 
+# **IMPORTANTE**: Sustituye esta lógica de hashing con la que use tu app (ej: bcrypt)
+# Aquí usamos SHA256 solo como ejemplo de un hash simple.
+USER_PASS_HASH = hashlib.sha256(USER_PASS_PLAN.encode('utf-8')).hexdigest()
+
+# Darle un momento a Flask para liberar la DB si es que la acaba de crear
+time.sleep(2) 
+conn = None
+try:
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # Asume una tabla de 'users' con 'email' y 'password'
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password TEXT NOT NULL
+        );
+    """)
+    # Insertar al usuario de prueba
+    c.execute("INSERT OR IGNORE INTO users (email, password) VALUES (?, ?)",
+              (USER_EMAIL, USER_PASS_HASH))
+    conn.commit()
+    print(f"Usuario {USER_EMAIL} asegurado en la DB.")
+except sqlite3.OperationalError as e:
+    print(f"Error al acceder a la base de datos: {e}. ¿La ruta de DB es correcta?")
+finally:
+    if conn:
+        conn.close()
+EOF_PYTHON_SCRIPT
+
+                        echo "2. Generando zap.yaml (Autenticación Formulario)..."
+                        # Generamos el archivo YAML para ZAP, usando autenticación basada en formulario
+                        cat > zap.yaml <<EOF_YAML
 env:
   contexts:
   - name: auth-context
     urls:
-      - $CURL_TARGET
+      - \${CURL_TARGET}
     authentication:
       method: formBasedAuthentication
       parameters:
-        loginPageUrl: $CURL_TARGET/login
-        loginRequestUrl: $CURL_TARGET/rest/user/login
-        loginRequestBody: '{"email":"testuser@example.com","password":"TestPassword123"}'
+        loginPageUrl: \${CURL_TARGET}/login
+        # Parámetros del formulario: email y password (ZAP envía la contraseña plana)
+        loginPostData: "email={%email%}&password={%password%}"
       verification:
-        method: poll
-        pollFrequency: 2
-        pollUrl: $CURL_TARGET/dashboard
-        pollPostData: ""
+        # Busca un texto en el dashboard para confirmar login exitoso
+        method: response
+        loggedInRegex: 'Dashboard' 
+        # Si tu app usa 'Panel de Tareas' usa: loggedInRegex: 'Panel de Tareas'
     users:
       - name: testuser
         credentials:
-          email: testuser@example.com
+          email: testuser@zap.com
           password: TestPassword123
 jobs:
+# 1. Spider (Rastreo) Autenticado
 - type: spider
   parameters:
-    url: $CURL_TARGET
+    context: auth-context
+    user: testuser
     maxDuration: 2
+    maxDepth: 5
+# 2. Esperar Passive Scan
+- type: passiveScan-wait
+  parameters:
+    maxDuration: 2
+# 3. Active Scan (Ataque) Autenticado
 - type: activeScan
   parameters:
-    url: $CURL_TARGET
-    maxDuration: 5
+    context: auth-context
+    user: testuser
+    maxDuration: 5 # Reducido, ajusta en producción
+    scanPolicy: Default Policy
+# 4. Generación de Reporte
 - type: report
   parameters:
     reportDir: /zap/wrk/
@@ -188,12 +240,12 @@ jobs:
     reportFile: zap_report.json
     reportTitle: ZAP Authenticated Active Scan Report
     template: traditional-json
-EOF
+EOF_YAML
 
-                        echo "Ejecutando ZAP con Automation Framework..."
-                        docker run --rm --network=host \\
-                            -v "$(pwd)":/zap/wrk/:rw \\
-                            ghcr.io/zaproxy/zaproxy:stable \\
+                        echo "3. Ejecutando ZAP con Automation Framework..."
+                        docker run --rm --network=host \
+                            -v "\$(pwd)":/zap/wrk/:rw \
+                            ghcr.io/zaproxy/zaproxy:stable \
                             zap.sh -cmd -autorun /zap/wrk/zap.yaml || true
                     else
                         echo "ADVERTENCIA: Flask no respondió. Saltando ZAP."
@@ -203,8 +255,10 @@ EOF
             post {
                 always {
                     sh """
+                        # Limpieza
                         if [ -f flask.pid ]; then
                             PID=\$(cat flask.pid)
+                            echo "Deteniendo proceso Flask con PID: \$PID"
                             kill "\$PID" || true
                             rm -f flask.pid
                         fi
