@@ -12,7 +12,7 @@ pipeline {
     stages {
 
         /* ==========================
-         * CHECKOUT
+         *      CHECKOUT
          * ========================== */
         stage('Checkout') {
             steps {
@@ -23,7 +23,7 @@ pipeline {
         }
 
         /* ==========================
-         * VIRTUAL ENV
+         *      VIRTUAL ENV
          * ========================== */
         stage('Install Dependencies') {
             steps {
@@ -41,7 +41,7 @@ pipeline {
 
 
         /* ==========================
-         * BANDIT
+         *      BANDIT
          * ========================== */
         stage('Bandit Security Scan') {
             steps {
@@ -62,7 +62,7 @@ pipeline {
 
 
         /* ==========================
-         * SNYK CODE
+         *      SNYK CODE
          * ========================== */
         stage('Snyk Code Scan (SAST)') {
             steps {
@@ -83,7 +83,7 @@ pipeline {
 
 
         /* ==========================
-         * SNYK DEPENDENCIAS
+         *      SNYK DEPENDENCIAS
          * ========================== */
         stage('Snyk Dependency Scan') {
             steps {
@@ -103,7 +103,7 @@ pipeline {
 
 
         /* ==========================
-         * SNYK CONTENEDOR
+         *      SNYK CONTENEDOR
          * ========================== */
         stage('Snyk Container Scan') {
             steps {
@@ -124,67 +124,43 @@ pipeline {
 
 
         /* ==========================
-         * OWASP ZAP (CORREGIDO)
+         *      OWASP ZAP FIXED
          * ========================== */
         stage('OWASP ZAP Baseline Scan') {
             steps {
                 sh """
-                    # 1. Activación de Entorno Virtual y captura del PID
                     echo "Iniciando aplicación Flask temporal..."
                     . venv/bin/activate
-                    
-                    # Ejecutar en segundo plano, guardar logs y CAPTURAR EL PID ($!)
-                    nohup python3 app.py > flask.log 2>&1 &
-                    FLASK_PID=\$! 
-                    echo "Flask PID: \$FLASK_PID"
 
-                    # 2. Bucle de espera robusto
-                    echo "Esperando que Flask inicie (máximo 40 segundos)..."
-                    CURL_TARGET="http://127.0.0.1:5000"
-                    
+                    nohup python3 app.py > flask.log 2>&1 &
+
+                    echo "Esperando que Flask inicie..."
                     for i in {1..20}; do
-                        # curl -s verifica silenciosamente el acceso a la URL
-                        if curl -s \$CURL_TARGET >/dev/null; then 
-                            echo "Flask está corriendo después de \$((i * 2)) segundos."
+                        if curl -s http://127.0.0.1:5000/ >/dev/null; then
+                            echo "Flask está corriendo!"
                             break
                         fi
                         echo "Esperando... \$i"
                         sleep 2
                     done
-                    
-                    # Verificación final. Si no inicia, sale sin error para que el post ejecute la limpieza.
-                    if ! curl -s \$CURL_TARGET >/dev/null; then
-                        echo "ERROR: Flask no se inició. Abortando ZAP."
-                        exit 0 
-                    fi
 
-                    # 3. Ajustando permisos 
                     echo "Ajustando permisos..."
                     chmod 777 \$(pwd) || true
                     chmod 777 \$(pwd)/* || true
 
-                    # 4. Ejecutando ZAP: se usa 127.0.0.1 para acceder al host
                     echo "Ejecutando ZAP..."
                     docker run --rm --network=host \
                         -v \$(pwd):/zap/wrk/:rw \
                         ghcr.io/zaproxy/zaproxy:stable \
                         zap-baseline.py \
-                        -t \$CURL_TARGET \
+                        -t http://127.0.0.1:5000 \
                         -r zap_report.html \
                         -J zap_report.json || true
                 """
             }
             post {
                 always {
-                    sh """
-                        # 5. Limpieza (MANDATORIA)
-                        # Detiene el proceso de Flask que se inició en segundo plano
-                        if [ -n "\$FLASK_PID" ]; then
-                            echo "Deteniendo proceso Flask con PID: \$FLASK_PID"
-                            kill -9 \$FLASK_PID || true
-                        fi
-                    """
-                    archiveArtifacts artifacts: 'zap_report.*, flask.log', fingerprint: true
+                    archiveArtifacts artifacts: 'zap_report.*', fingerprint: true
                 }
             }
         }
@@ -192,7 +168,7 @@ pipeline {
 
 
         /* ==========================
-         * PUSH DOCKER
+         *      PUSH DOCKER
          * ========================== */
         stage('Push Docker Image') {
             steps {
@@ -211,7 +187,7 @@ pipeline {
 
 
         /* ==========================
-         * DEPLOY EN EC2
+         *      DEPLOY EN EC2
          * ========================== */
         stage('Deploy to EC2') {
             steps {
