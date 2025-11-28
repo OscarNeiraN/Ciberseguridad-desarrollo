@@ -4,7 +4,7 @@ pipeline {
     environment {
         DOCKER_IMAGE = "oneiran/securedev:latest"
         EC2_USER = "ec2-user"
-        EC2_IP = "44.211.117.60"
+        EC2_IP = "3.237.37.98"
         EC2_KEY = "jenkins/claves-jenkins-ubuntu.pem"
         SNYK_TOKEN = credentials('snyk-token')
     }
@@ -210,8 +210,8 @@ EOF_PYTHON_SCRIPT
 
                     if [ "\${READY}" -eq 1 ]; then
                         
-                        echo "2. Generando zap.yaml (Autenticación Formulario)..."
-                        # Generamos el archivo YAML para ZAP, usando autenticación basada en formulario
+                        echo "2. Generando zap.yaml (Autenticación y Escaneo Completo)..."
+                        # Generamos el archivo YAML para ZAP, combinando la autenticación con la configuración de escaneo proporcionada
                         cat > zap.yaml <<EOF_YAML
 env:
   contexts:
@@ -235,25 +235,36 @@ env:
           username: testuser_zap
           password: TestPassword123
 jobs:
-# 1. Spider (Rastreo) Autenticado
+# 1. Configuración de Escaneo Pasivo (del YAML proporcionado)
+- type: passiveScan-config
+  parameters:
+    enableTags: false
+    maxAlertsPerRule: 10
+# 2. Spider (Rastreo) Autenticado
 - type: spider
   parameters:
     context: auth-context
     user: testuser
     maxDuration: 2
     maxDepth: 5
-# 2. Esperar Passive Scan
+    url: \${CURL_TARGET}
+# 3. Esperar Passive Scan
 - type: passiveScan-wait
   parameters:
     maxDuration: 2
-# 3. Active Scan (Ataque) Autenticado
+# 4. Active Scan (Ataque) Autenticado
 - type: activeScan
   parameters:
     context: auth-context
     user: testuser
     maxDuration: 5 # Reducido, ajusta en producción
     scanPolicy: Default Policy
-# 4. Generación de Reporte
+# 5. Resumen de Salida (del YAML proporcionado)
+- type: outputSummary
+  parameters:
+    format: json
+    summaryFile: /zap/wrk/zap_summary.json
+# 6. Generación de Reportes
 - type: report
   parameters:
     reportDir: /zap/wrk/
@@ -291,7 +302,7 @@ EOF_YAML
                         # Limpiar database.db para el siguiente build
                         rm -f database.db || true
                     """
-                    archiveArtifacts artifacts: 'zap_report.*, flask.log', fingerprint: true
+                    archiveArtifacts artifacts: 'zap_report.*, zap_summary.json, flask.log', fingerprint: true
                 }
             }
         }
