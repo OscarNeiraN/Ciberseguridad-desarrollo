@@ -122,13 +122,81 @@ pipeline {
          * OWASP ZAP ACTIVE SCAN + AUTH (DAST)
          * ========================== */
         stage('OWASP ZAP Active Scan') {
+            // PRIMER PASO: CREAR ZAP.YAML USANDO writeFile (Soluciona el error de permisos)
             steps {
+                echo "1. Creando zap.yaml usando writeFile..."
+                writeFile file: 'zap.yaml', text: """
+env:
+  contexts:
+  - name: auth-context
+    urls:
+      - ${APP_URL}
+    authentication:
+      method: formBasedAuthentication
+      parameters:
+        loginPageUrl: ${APP_URL}/login
+        loginPostData: "username={%username%}&password={%password%}"
+      verification:
+        method: response
+        # La página de dashboard contiene 'Welcome, user'
+        loggedInRegex: 'Welcome, user' 
+    users:
+      - name: testuser
+        credentials:
+          username: testuser_zap
+          password: TestPassword123
+jobs:
+# 1. Configuración de Escaneo Pasivo
+- type: passiveScan-config
+  parameters:
+    enableTags: false
+    maxAlertsPerRule: 10
+# 2. Spider (Rastreo) Autenticado
+- type: spider
+  parameters:
+    context: auth-context
+    user: testuser
+    maxDuration: 2
+    maxDepth: 5
+    url: ${APP_URL}
+# 3. Esperar Passive Scan
+- type: passiveScan-wait
+  parameters:
+    maxDuration: 2
+# 4. Active Scan (Ataque) Autenticado
+- type: activeScan
+  parameters:
+    context: auth-context
+    user: testuser
+    maxDuration: 5
+    scanPolicy: Default Policy
+# 5. Resumen de Salida
+- type: outputSummary
+  parameters:
+    format: json
+    summaryFile: /zap/wrk/zap_summary.json
+# 6. Generación de Reportes HTML y JSON
+- type: report
+  parameters:
+    reportDir: /zap/wrk/
+    reportFile: zap_report.html
+    reportTitle: ZAP Authenticated Active Scan Report
+    template: traditional-html
+- type: report
+  parameters:
+    reportDir: /zap/wrk/
+    reportFile: zap_report.json
+    reportTitle: ZAP Authenticated Active Scan Report
+    template: traditional-json
+"""
+                
+                // SEGUNDO PASO: Ejecutar la lógica de shell
                 sh """
                     # 0. Definir variables y path del intérprete
                     PYTHON_EXE="./venv/bin/python3"
                     APP_URL="${APP_URL}"
                     
-                    echo "1. Creando y poblando la base de datos (database.db)..."
+                    echo "2. Creando y poblando la base de datos (database.db)..."
                     
                     # Usa un script Python incrustado para crear la DB (similar a create_db.py)
                     \${PYTHON_EXE} - <<'EOF_PYTHON_SCRIPT'
@@ -195,8 +263,8 @@ finally:
         conn.close()
 EOF_PYTHON_SCRIPT
 
-                    echo "2. Iniciando aplicación Flask temporal..."
-                    # **CORRECCIÓN:** Usa 'vulnerable_app.py' para coincidir con la configuración del Dockerfile
+                    echo "3. Iniciando aplicación Flask temporal..."
+                    # **IMPORTANTE:** Usa 'vulnerable_app.py' como se infirió de tu Dockerfile
                     nohup \${PYTHON_EXE} vulnerable_app.py > flask.log 2>&1 &
                     echo \$! > flask.pid
                     
@@ -204,7 +272,7 @@ EOF_PYTHON_SCRIPT
                     echo "Dando 5 segundos a Flask para iniciar..."
                     sleep 5
                     
-                    echo "3. Esperando que Flask inicie (Máx 40s)..."
+                    echo "4. Esperando que Flask inicie (Máx 40s)..."
                     READY=0
                     TIMEOUT=20 # 20 intentos * 2 segundos = 40 segundos max
                     COUNT=0
@@ -226,74 +294,8 @@ EOF_PYTHON_SCRIPT
 
                     if [ "\${READY}" -eq 1 ]; then
                         
-                        echo "4. Generando zap.yaml (Autenticación y Escaneo Completo)..."
-                        # Generamos el archivo YAML para ZAP (Automation Framework)
-                        cat > zap.yaml <<'EOF_YAML'
-env:
-  contexts:
-  - name: auth-context
-    urls:
-      - http://127.0.0.1:5000
-    authentication:
-      method: formBasedAuthentication
-      parameters:
-        loginPageUrl: http://127.0.0.1:5000/login
-        loginPostData: "username={%username%}&password={%password%}"
-      verification:
-        method: response
-        # La página de dashboard contiene 'Welcome, user'
-        loggedInRegex: 'Welcome, user' 
-    users:
-      - name: testuser
-        credentials:
-          username: testuser_zap
-          password: TestPassword123
-jobs:
-# 1. Configuración de Escaneo Pasivo
-- type: passiveScan-config
-  parameters:
-    enableTags: false
-    maxAlertsPerRule: 10
-# 2. Spider (Rastreo) Autenticado
-- type: spider
-  parameters:
-    context: auth-context
-    user: testuser
-    maxDuration: 2
-    maxDepth: 5
-    url: http://127.0.0.1:5000
-# 3. Esperar Passive Scan
-- type: passiveScan-wait
-  parameters:
-    maxDuration: 2
-# 4. Active Scan (Ataque) Autenticado
-- type: activeScan
-  parameters:
-    context: auth-context
-    user: testuser
-    maxDuration: 5
-    scanPolicy: Default Policy
-# 5. Resumen de Salida
-- type: outputSummary
-  parameters:
-    format: json
-    summaryFile: /zap/wrk/zap_summary.json
-# 6. Generación de Reportes HTML y JSON
-- type: report
-  parameters:
-    reportDir: /zap/wrk/
-    reportFile: zap_report.html
-    reportTitle: ZAP Authenticated Active Scan Report
-    template: traditional-html
-- type: report
-  parameters:
-    reportDir: /zap/wrk/
-    reportFile: zap_report.json
-    reportTitle: ZAP Authenticated Active Scan Report
-    template: traditional-json
-EOF_YAML
-                        
                         echo "5. Ejecutando ZAP con Automation Framework..."
+                        # Ejecuta ZAP, que ahora puede leer zap.yaml correctamente
                         docker run --rm --network=host \
                             -v "\$(pwd)":/zap/wrk/:rw \
                             ghcr.io/zaproxy/zaproxy:stable \
@@ -321,8 +323,9 @@ EOF_YAML
                             kill "\$PID" || true
                             rm -f flask.pid
                         fi
-                        # Limpiar database.db
+                        # Limpiar database.db y zap.yaml
                         rm -f database.db || true
+                        rm -f zap.yaml || true
                     """
                     archiveArtifacts artifacts: 'zap_report.*, zap_summary.json, flask.log', fingerprint: true
                 }
@@ -357,9 +360,7 @@ EOF_YAML
                 // Asegura permisos para la clave SSH
                 sh "chmod 400 ${EC2_KEY}" 
                 
-                // Asume que tienes una credencial SSH definida en Jenkins con la clave privada de EC2
-                // Reemplaza 'ec2-ssh-key-id' con el ID de tu credencial SSH si es necesario,
-                // o usa la ruta de archivo local con la clave.
+                // Ejecución remota del despliegue
                 sh """
                     ssh -o StrictHostKeyChecking=no -i ${EC2_KEY} ${EC2_USER}@${EC2_IP} '
                         echo "Deteniendo y eliminando contenedor viejo..."
