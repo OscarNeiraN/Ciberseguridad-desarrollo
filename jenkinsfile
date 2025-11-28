@@ -296,11 +296,11 @@ EOF_PYTHON_SCRIPT
                     if [ "\${READY}" -eq 1 ]; then
                         
                         echo "5. Ejecutando ZAP con Automation Framework..."
-                        # Ejecuta ZAP, que ahora puede leer zap.yaml correctamente
+                        # EJECUCIÓN CORREGIDA: Especifica el puerto 8090 para evitar "Address already in use"
                         docker run --rm --network=host \
                             -v "\$(pwd)":/zap/wrk/:rw \
                             ghcr.io/zaproxy/zaproxy:stable \
-                            zap.sh -cmd -autorun /zap/wrk/zap.yaml || true
+                            zap.sh -cmd -port 8090 -autorun /zap/wrk/zap.yaml || true
                     else
                         echo "========================================="
                         echo "DIAGNÓSTICO: El servidor Flask no respondió. Revisando flask.log..."
