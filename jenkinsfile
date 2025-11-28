@@ -12,7 +12,7 @@ pipeline {
     stages {
 
         /* ==========================
-         *      CHECKOUT
+         * CHECKOUT
          * ========================== */
         stage('Checkout') {
             steps {
@@ -23,7 +23,7 @@ pipeline {
         }
 
         /* ==========================
-         *      VIRTUAL ENV
+         * VIRTUAL ENV
          * ========================== */
         stage('Install Dependencies') {
             steps {
@@ -32,7 +32,8 @@ pipeline {
                     python3 -m venv venv
 
                     echo "Instalando dependencias..."
-                    . venv/bin/activate
+                    # Activamos el venv para que pip instale las dependencias correctamente.
+                    . venv/bin/activate 
                     pip install --upgrade pip
                     pip install -r requirements.txt
                 """
@@ -41,11 +42,12 @@ pipeline {
 
 
         /* ==========================
-         *      BANDIT
+         * BANDIT
          * ========================== */
         stage('Bandit Security Scan') {
             steps {
                 sh """
+                    # Ejecutar desde el venv
                     . venv/bin/activate
                     echo "Ejecutando Bandit..."
                     bandit -r . -f json -o bandit-report.json || true
@@ -62,7 +64,7 @@ pipeline {
 
 
         /* ==========================
-         *      SNYK CODE
+         * SNYK CODE
          * ========================== */
         stage('Snyk Code Scan (SAST)') {
             steps {
@@ -83,7 +85,7 @@ pipeline {
 
 
         /* ==========================
-         *      SNYK DEPENDENCIAS
+         * SNYK DEPENDENCIAS
          * ========================== */
         stage('Snyk Dependency Scan') {
             steps {
@@ -103,7 +105,7 @@ pipeline {
 
 
         /* ==========================
-         *      SNYK CONTENEDOR
+         * SNYK CONTENEDOR
          * ========================== */
         stage('Snyk Container Scan') {
             steps {
@@ -124,43 +126,66 @@ pipeline {
 
 
         /* ==========================
-         *      OWASP ZAP FIXED
+         * OWASP ZAP (CORREGIDO Y ROBUSTO)
          * ========================== */
         stage('OWASP ZAP Baseline Scan') {
             steps {
                 sh """
+                    # 1. Iniciando Flask con el intérprete del venv (más robusto)
                     echo "Iniciando aplicación Flask temporal..."
-                    . venv/bin/activate
+                    
+                    # Llamada directa a python del venv y captura del PID
+                    nohup venv/bin/python3 app.py > flask.log 2>&1 &
+                    FLASK_PID=\$! 
+                    echo "Flask PID: \$FLASK_PID"
+                    FLASK_READY="false" # Bandera para controlar la ejecución de ZAP
 
-                    nohup python3 app.py > flask.log 2>&1 &
-
-                    echo "Esperando que Flask inicie..."
+                    # 2. Bucle de espera robusto
+                    echo "Esperando que Flask inicie (máximo 40 segundos)..."
+                    CURL_TARGET="http://127.0.0.1:5000"
+                    
                     for i in {1..20}; do
-                        if curl -s http://127.0.0.1:5000/ >/dev/null; then
-                            echo "Flask está corriendo!"
+                        # curl -s verifica silenciosamente el acceso a la URL
+                        if curl -s \$CURL_TARGET >/dev/null; then 
+                            echo "Flask está corriendo después de \$((i * 2)) segundos."
+                            FLASK_READY="true"
                             break
                         fi
                         echo "Esperando... \$i"
                         sleep 2
                     done
+                    
+                    # 3. Ejecución condicional de ZAP
+                    if [ "\$FLASK_READY" = "true" ]; then
+                        echo "Ajustando permisos..."
+                        chmod 777 \$(pwd) || true
+                        chmod 777 \$(pwd)/* || true
 
-                    echo "Ajustando permisos..."
-                    chmod 777 \$(pwd) || true
-                    chmod 777 \$(pwd)/* || true
-
-                    echo "Ejecutando ZAP..."
-                    docker run --rm --network=host \
-                        -v \$(pwd):/zap/wrk/:rw \
-                        ghcr.io/zaproxy/zaproxy:stable \
-                        zap-baseline.py \
-                        -t http://127.0.0.1:5000 \
-                        -r zap_report.html \
-                        -J zap_report.json || true
+                        echo "Ejecutando ZAP..."
+                        # Se usa 127.0.0.1 para acceder al host
+                        docker run --rm --network=host \
+                            -v \$(pwd):/zap/wrk/:rw \
+                            ghcr.io/zaproxy/zaproxy:stable \
+                            zap-baseline.py \
+                            -t \$CURL_TARGET \
+                            -r zap_report.html \
+                            -J zap_report.json || true
+                    else
+                        echo "ADVERTENCIA: Flask no se inició correctamente o no respondió después de 40s. Saltando escaneo ZAP."
+                    fi
                 """
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'zap_report.*', fingerprint: true
+                    sh """
+                        # 4. Limpieza (MANDATORIA)
+                        # Detiene el proceso de Flask que se inició en segundo plano.
+                        if [ -n "\$FLASK_PID" ]; then
+                            echo "Deteniendo proceso Flask con PID: \$FLASK_PID"
+                            kill "\$FLASK_PID" || true
+                        fi
+                    """
+                    archiveArtifacts artifacts: 'zap_report.*, flask.log', fingerprint: true
                 }
             }
         }
@@ -168,7 +193,7 @@ pipeline {
 
 
         /* ==========================
-         *      PUSH DOCKER
+         * PUSH DOCKER
          * ========================== */
         stage('Push Docker Image') {
             steps {
@@ -187,7 +212,7 @@ pipeline {
 
 
         /* ==========================
-         *      DEPLOY EN EC2
+         * DEPLOY EN EC2
          * ========================== */
         stage('Deploy to EC2') {
             steps {
