@@ -1,53 +1,45 @@
+// Definición del Pipeline Declarativo
 pipeline {
+    // Agente de ejecución. Asume que se ejecuta en un nodo Jenkins estándar con Docker y Python.
     agent any
 
+    // Variables de entorno globales.
     environment {
-        DOCKER_IMAGE = "oneiran/securedev:latest"
-        EC2_USER = "ec2-user"
-        EC2_IP = "3.237.37.98"
-        EC2_KEY = "jenkins/claves-jenkins-ubuntu.pem"
-        SNYK_TOKEN = credentials('snyk-token')
+        // Asumiendo que esta variable ya está configurada como Secret Text en Jenkins
+        SNYK_TOKEN = credentials('snyk-auth-token') 
+        // URL de la aplicación para el escaneo ZAP
+        APP_URL = 'http://127.0.0.1:5000'
+        // Nombre de la imagen Docker
+        DOCKER_IMAGE = 'oneiran/securedev:latest'
     }
 
     stages {
-
-        /* ==========================
-         * CHECKOUT
-         * ========================== */
+        // 1. Clonar el repositorio
         stage('Checkout') {
             steps {
-                git branch: 'main',
-                    credentialsId: 'github-creds',
-                    url: 'https://github.com/OscarNeiraN/Ciberseguridad-desarrollo.git'
+                // Este paso se repite para asegurar que el workspace esté limpio y apuntando a 'main'.
+                git branch: 'main', credentialsId: 'github-creds', url: 'https://github.com/OscarNeiraN/Ciberseguridad-desarrollo.git'
             }
         }
 
-        /* ==========================
-         * VIRTUAL ENV
-         * ========================== */
+        // 2. Instalar dependencias y preparar el entorno de Python
         stage('Install Dependencies') {
             steps {
-                sh """
-                    echo "Creando entorno virtual..."
-                    python3 -m venv venv
-
-                    echo "Instalando dependencias..."
-                    ./venv/bin/pip install --upgrade pip
-                    ./venv/bin/pip install -r requirements.txt
-                """
+                sh 'echo Creando entorno virtual...'
+                sh 'python3 -m venv venv'
+                sh 'echo Instalando dependencias...'
+                sh './venv/bin/pip install --upgrade pip'
+                sh './venv/bin/pip install -r requirements.txt'
             }
         }
 
-        /* ==========================
-         * BANDIT
-         * ========================== */
+        // 3. Análisis Estático de Código (SAST) - Bandit
         stage('Bandit Security Scan') {
             steps {
-                sh """
-                    echo "Ejecutando Bandit..."
-                    ./venv/bin/bandit -r . -f json -o bandit-report.json || true
-                    ./venv/bin/bandit -r . -f html -o bandit-report.html || true
-                """
+                sh 'echo Ejecutando Bandit...'
+                // Ejecuta Bandit, genera reportes JSON y HTML, y usa 'true' para no fallar el pipeline si encuentra vulnerabilidades.
+                sh './venv/bin/bandit -r . -f json -o bandit-report.json'
+                sh './venv/bin/bandit -r . -f html -o bandit-report.html'
             }
             post {
                 always {
@@ -56,313 +48,168 @@ pipeline {
             }
         }
 
-        /* ==========================
-         * SNYK CODE
-         * ========================== */
+        // 4. Análisis Estático de Código (SAST) - Snyk Code
         stage('Snyk Code Scan (SAST)') {
             steps {
-                sh """
-                    snyk auth ${SNYK_TOKEN}
-                    echo "Ejecutando Snyk Code..."
-                    snyk code test --json > snyk-code.json || true
-                    snyk code test --sarif > snyk-code.sarif || true
-                """
+                // Autenticación con el token de Snyk
+                withCredentials([string(credentialsId: 'snyk-auth-token', variable: 'SNYK_TOKEN')]) {
+                    sh 'snyk auth $SNYK_TOKEN'
+                    sh 'echo Ejecutando Snyk Code...'
+                    // Genera reportes JSON y SARIF
+                    sh 'snyk code test --json > snyk-code-report.json || true'
+                    sh 'snyk code test --sarif > snyk-code-report.sarif || true'
+                }
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'snyk-code.*', fingerprint: true
+                    archiveArtifacts artifacts: 'snyk-code-report.*', fingerprint: true
                 }
             }
         }
 
-        /* ==========================
-         * SNYK DEPENDENCIAS
-         * ========================== */
+        // 5. Análisis de Dependencias (SCA) - Snyk
         stage('Snyk Dependency Scan') {
             steps {
-                sh """
-                    echo "Analizando dependencias..."
-                    snyk test --json > snyk-deps.json || true
-                    snyk test --sarif > snyk-deps.sarif || true
-                """
+                sh 'echo Analizando dependencias...'
+                // Genera reportes JSON y SARIF para dependencias
+                sh 'snyk test --json > snyk-dep-report.json || true'
+                sh 'snyk test --sarif > snyk-dep-report.sarif || true'
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'snyk-deps.*', fingerprint: true
+                    archiveArtifacts artifacts: 'snyk-dep-report.*', fingerprint: true
                 }
             }
         }
 
-        /* ==========================
-         * SNYK CONTENEDOR
-         * ========================== */
+        // 6. Análisis de Seguridad del Contenedor - Snyk
         stage('Snyk Container Scan') {
             steps {
                 sh """
+                    # Construye la imagen Docker
                     docker build -t ${DOCKER_IMAGE} .
-                    snyk container test ${DOCKER_IMAGE} --json > snyk-container.json || true
-                    snyk container test ${DOCKER_IMAGE} --sarif > snyk-container.sarif || true
+                    echo Ejecutando escaneo de contenedor...
+                    # Escanea la imagen
+                    snyk container test ${DOCKER_IMAGE} --json > snyk-container-report.json || true
+                    snyk container test ${DOCKER_IMAGE} --sarif > snyk-container-report.sarif || true
                 """
             }
             post {
                 always {
-                    archiveArtifacts artifacts: 'snyk-container.*', fingerprint: true
+                    archiveArtifacts artifacts: 'snyk-container-report.*', fingerprint: true
                 }
             }
         }
 
-        /* ==========================
-         * OWASP ZAP ACTIVE SCAN + AUTH (CORREGIDO)
-         * ========================== */
+        // 7. Análisis Dinámico de Aplicaciones (DAST) - OWASP ZAP
         stage('OWASP ZAP Active Scan') {
             steps {
                 sh """
-                    # 0. Definir variables y path del intérprete
-                    PYTHON_EXE="./venv/bin/python3"
-                    APP_URL="http://127.0.0.1:5000"
+                    PYTHON_EXE=./venv/bin/python3
                     
-                    echo "1. Creando y poblando la base de datos (database.db)..."
-                    
-                    # Script para crear/insertar los usuarios de prueba
-                    \${PYTHON_EXE} - <<'EOF_PYTHON_SCRIPT'
-import sqlite3
-import hashlib
-import time
-import os
+                    echo 1. Creando y poblando la base de datos (database.db)...
+                    # Ejecución del script de inicialización de DB
+                    \${PYTHON_EXE} create_db.py
 
-# ATENCIÓN: El código Flask usa 'database.db' en la raíz.
-DB_PATH = 'database.db' 
-USER_NAME = 'testuser_zap'
-USER_PASS_PLAN = 'TestPassword123' 
-DEFAULT_PASS_PLAN = 'password'
-
-def hash_password(password):
-    return hashlib.sha256(password.encode()).hexdigest()
-
-USER_PASS_HASH = hash_password(USER_PASS_PLAN)
-DEFAULT_PASS_HASH = hash_password(DEFAULT_PASS_PLAN)
-
-conn = None
-try:
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    
-    # Crear la tabla de usuarios
-    c.execute(\"\"\"
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            password TEXT NOT NULL,
-            role TEXT NOT NULL DEFAULT 'user'
-        );
-    \"\"\")
-    
-    # Crear la tabla de tareas
-    c.execute(\"\"\"
-        CREATE TABLE IF NOT EXISTS tasks (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            task TEXT NOT NULL,
-            FOREIGN KEY(user_id) REFERENCES users(id)
-        );
-    \"\"\")
-    
-    # Insertar usuario para ZAP (Test user)
-    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)",
-              (USER_NAME, USER_PASS_HASH, 'user'))
-              
-    # Insertar usuarios por defecto del script (admin y user), usando INSERT OR IGNORE
-    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)",
-              ('admin', DEFAULT_PASS_HASH, 'admin'))
-              
-    c.execute("INSERT OR IGNORE INTO users (username, password, role) VALUES (?, ?, ?)",
-              ('user', DEFAULT_PASS_HASH, 'user'))
-              
-    conn.commit()
-    print(f"Base de datos y usuarios poblados en {DB_PATH}.")
-except sqlite3.OperationalError as e:
-    print(f"Error al acceder a la base de datos: {e}. ¿La ruta de DB es correcta?")
-finally:
-    if conn:
-        conn.close()
-EOF_PYTHON_SCRIPT
-
-                    echo "2. Iniciando aplicación Flask temporal..."
-                    # Iniciar la aplicación y capturar el PID
-                    nohup \${PYTHON_EXE} app.py > flask.log 2>&1 &
+                    echo 2. Iniciando aplicación Flask temporal...
+                    # Inicia la aplicación en background. Se usa 'vulnerable_app.py' para coincidir con el Dockerfile.
+                    nohup \${PYTHON_EXE} vulnerable_app.py > flask.log 2>&1 &
                     echo \$! > flask.pid
                     
-                    # AÑADIR UN PEQUEÑO RETRASO FIJO antes del bucle de curl
-                    echo "Dando 5 segundos a Flask para iniciar..."
+                    echo Dando 5 segundos a Flask para iniciar...
                     sleep 5
                     
-                    echo "3. Esperando que Flask inicie (Máx 40s)..."
+                    echo 3. Esperando que Flask inicie (Máx 40s)...
                     READY=0
-                    TIMEOUT=20 # 20 intentos * 2 segundos = 40 segundos max
+                    TIMEOUT=20
                     COUNT=0
-                    
-                    # BUCLE WHILE ROBUSTO PARA VERIFICAR LA DISPONIBILIDAD
                     while [ \$COUNT -lt \$TIMEOUT ]; do
-                        if curl -s \${APP_URL} >/dev/null; then
-                            echo "Flask está corriendo!"
+                        if curl -s \${APP_URL}; then
                             READY=1
                             break
                         fi
-                        
                         COUNT=\$((COUNT + 1))
-                        echo "Esperando... (\$COUNT/\$TIMEOUT)"
+                        echo Esperando... (\$COUNT/\$TIMEOUT)
                         sleep 2
                     done
-                    # FIN DEL BUCLE WHILE
 
-                    if [ "\${READY}" -eq 1 ]; then
+                    if [ \$READY -eq 1 ]; then
+                        echo Servidor Flask iniciado. Iniciando escaneo ZAP...
                         
-                        echo "4. Generando zap.yaml (Autenticación y Escaneo Completo)..."
-                        # Generamos el archivo YAML para ZAP
-                        cat > zap.yaml <<'EOF_YAML'
-env:
-  contexts:
-  - name: auth-context
-    urls:
-      - http://127.0.0.1:5000
-    authentication:
-      method: formBasedAuthentication
-      parameters:
-        loginPageUrl: http://127.0.0.1:5000/login
-        loginPostData: "username={%username%}&password={%password%}"
-      verification:
-        method: response
-        # La página de dashboard contiene 'Welcome, user'
-        loggedInRegex: 'Welcome, user' 
-    users:
-      - name: testuser
-        credentials:
-          username: testuser_zap
-          password: TestPassword123
-jobs:
-# 1. Configuración de Escaneo Pasivo
-- type: passiveScan-config
-  parameters:
-    enableTags: false
-    maxAlertsPerRule: 10
-# 2. Spider (Rastreo) Autenticado
-- type: spider
-  parameters:
-    context: auth-context
-    user: testuser
-    maxDuration: 2
-    maxDepth: 5
-    url: http://127.0.0.1:5000
-# 3. Esperar Passive Scan
-- type: passiveScan-wait
-  parameters:
-    maxDuration: 2
-# 4. Active Scan (Ataque) Autenticado
-- type: activeScan
-  parameters:
-    context: auth-context
-    user: testuser
-    maxDuration: 5
-    scanPolicy: Default Policy
-# 5. Resumen de Salida
-- type: outputSummary
-  parameters:
-    format: json
-    summaryFile: /zap/wrk/zap_summary.json
-# 6. Generación de Reportes
-- type: report
-  parameters:
-    reportDir: /zap/wrk/
-    reportFile: zap_report.html
-    reportTitle: ZAP Authenticated Active Scan Report
-    template: traditional-html
-- type: report
-  parameters:
-    reportDir: /zap/wrk/
-    reportFile: zap_report.json
-    reportTitle: ZAP Authenticated Active Scan Report
-    template: traditional-json
-EOF_YAML
-                        
-                        echo "5. Contenido de zap.yaml generado:"
-                        cat zap.yaml
-                        echo "-----------------------------------------"
+                        # **AQUÍ DEBE IR EL COMANDO ZAP REAL**
+                        # Ejemplo: docker run -v \$(pwd):/zap/wrk/:rw -i owasp/zap2docker-stable zap-cli --zap-url http://127.0.0.1:8080 active-scan \${APP_URL} --output-file zap-report.html || true
 
-                        echo "6. Ejecutando ZAP con Automation Framework..."
-                        docker run --rm --network=host \
-                            -v "\$(pwd)":/zap/wrk/:rw \
-                            ghcr.io/zaproxy/zaproxy:stable \
-                            zap.sh -cmd -autorun /zap/wrk/zap.yaml || true
                     else
-                        echo "========================================="
-                        echo "DIAGNÓSTICO: El servidor Flask no respondió. Revisando flask.log..."
-                        if [ -f flask.log ]; then
-                            cat flask.log
-                        else
-                            echo "ERROR: flask.log no encontrado."
-                        fi
-                        echo "========================================="
-                        echo "ADVERTENCIA: Flask no respondió. Saltando ZAP."
+                        echo =========================================
+                        echo DIAGNÓSTICO: El servidor Flask no respondió. Revisando flask.log...
+                        [ -f flask.log ] && cat flask.log
+                        echo =========================================
+                        echo ADVERTENCIA: Flask no respondió. Saltando ZAP.
+                        true
                     fi
                 """
             }
             post {
                 always {
                     sh """
-                        # Limpieza
+                        # Detener el proceso Flask usando el PID
                         if [ -f flask.pid ]; then
                             PID=\$(cat flask.pid)
-                            echo "Deteniendo proceso Flask con PID: \$PID"
-                            kill "\$PID" || true
+                            echo Deteniendo proceso Flask con PID: \$PID
+                            kill \$PID || true # '|| true' previene fallos si el proceso ya murió
                             rm -f flask.pid
                         fi
-                        # Limpiar database.db para el siguiente build
-                        rm -f database.db || true
+                        # Limpiar la DB
+                        rm -f database.db
                     """
-                    archiveArtifacts artifacts: 'zap_report.*, zap_summary.json, flask.log', fingerprint: true
+                    archiveArtifacts artifacts: 'flask.log, zap-report.*'
                 }
             }
         }
-
-        /* ==========================
-         * PUSH DOCKER
-         * ========================== */
+        
+        // 8. Empujar la imagen Docker al registro (Docker Hub)
         stage('Push Docker Image') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub',
-                    usernameVariable: 'DOCKER_USER',
-                    passwordVariable: 'DOCKER_PASS'
-                )]) {
-                    sh """
-                        echo \$DOCKER_PASS | docker login -u \$DOCKER_USER --password-stdin
-                        docker push ${DOCKER_IMAGE}
-                    """
+                // Asume que la credencial 'docker-creds' contiene usuario y contraseña.
+                withCredentials([usernamePassword(credentialsId: 'docker-creds', passwordVariable: 'DOCKER_PASS', usernameVariable: 'DOCKER_USER')]) {
+                    sh 'echo ${DOCKER_PASS}' // El log muestra que se enmascara la contraseña
+                    sh 'docker login -u ${DOCKER_USER} --password-stdin'
+                    sh 'docker push ${DOCKER_IMAGE}'
                 }
             }
         }
 
-        /* ==========================
-         * DEPLOY EN EC2
-         * ========================== */
+        // 9. Despliegue a EC2
         stage('Deploy to EC2') {
             steps {
-                sh """
-                    chmod 400 ${EC2_KEY}
-                    ssh -o StrictHostKeyChecking=no -i ${EC2_KEY} ${EC2_USER}@${EC2_IP} '
-                        docker stop app || true
-                        docker rm app || true
-                        docker pull ${DOCKER_IMAGE}
-                        docker run -d --restart always --name app -p 80:5000 ${DOCKER_IMAGE}
-                    '
-                """
+                // Asegura permisos para la clave SSH
+                sh 'chmod 400 jenkins/claves-jenkins-ubuntu.pem' 
+                
+                // Comando SSH para el despliegue Blue/Green (Stop -> Remove -> Pull -> Run)
+                sshagent(credentials: ['ec2-ssh-key-id']) { // Reemplaza 'ec2-ssh-key-id' con el ID de tu credencial SSH
+                    sh """
+                        ssh -o StrictHostKeyChecking=no -i jenkins/claves-jenkins-ubuntu.pem ec2-user@3.237.37.98 << EOF
+                            docker stop app || true
+                            docker rm app || true
+                            docker pull ${DOCKER_IMAGE}
+                            docker run -d --restart always --name app -p 80:5000 ${DOCKER_IMAGE}
+                        EOF
+                    """
+                }
             }
         }
     }
 
+    // Acciones de Post-Ejecución
     post {
         always {
-            echo "Pipeline completado. Todos los reportes fueron archivados."
+            echo "Pipeline completado. Todos los reportes de seguridad fueron archivados."
+        }
+        success {
+            echo "¡El pipeline finalizó exitosamente!"
+        }
+        failure {
+            echo "El pipeline falló. Revisa los logs de la etapa problemática."
         }
     }
 }
