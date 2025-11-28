@@ -122,7 +122,8 @@ pipeline {
          * OWASP ZAP ACTIVE SCAN + AUTH (DAST)
          * ========================== */
         stage('OWASP ZAP Active Scan') {
-            // PRIMER PASO: CREAR ZAP.YAML USANDO writeFile (Soluciona el error de permisos)
+            
+            // PASO 1: CREAR ZAP.YAML USANDO writeFile (Necesita permisos de escritura en el workspace)
             steps {
                 echo "1. Creando zap.yaml usando writeFile..."
                 writeFile file: 'zap.yaml', text: """
@@ -190,7 +191,7 @@ jobs:
     template: traditional-json
 """
                 
-                // SEGUNDO PASO: Ejecutar la lógica de shell
+                // PASO 2: Ejecutar la lógica de shell
                 sh """
                     # 0. Definir variables y path del intérprete
                     PYTHON_EXE="./venv/bin/python3"
