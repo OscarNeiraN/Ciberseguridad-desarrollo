@@ -118,8 +118,8 @@ pipeline {
             steps {
                 sh """
                     # 0. Definir variables y path del intérprete
-                    CURL_TARGET="http://127.0.0.1:5000"
                     PYTHON_EXE="./venv/bin/python3"
+                    APP_URL="http://127.0.0.1:5000"
                     
                     echo "1. Creando y poblando la base de datos (database.db)..."
                     
@@ -187,7 +187,7 @@ finally:
         conn.close()
 EOF_PYTHON_SCRIPT
 
-                    echo "Iniciando aplicación Flask temporal..."
+                    echo "2. Iniciando aplicación Flask temporal..."
                     # Iniciar la aplicación y capturar el PID
                     nohup \${PYTHON_EXE} app.py > flask.log 2>&1 &
                     echo \$! > flask.pid
@@ -196,10 +196,10 @@ EOF_PYTHON_SCRIPT
                     echo "Dando 5 segundos a Flask para iniciar..."
                     sleep 5
                     
-                    echo "Esperando que Flask inicie (Máx 40s)..."
+                    echo "3. Esperando que Flask inicie (Máx 40s)..."
                     READY=0
                     for i in {1..20}; do
-                        if curl -s \$CURL_TARGET >/dev/null; then
+                        if curl -s \${APP_URL} >/dev/null; then
                             echo "Flask está corriendo!"
                             READY=1
                             break
@@ -210,32 +210,30 @@ EOF_PYTHON_SCRIPT
 
                     if [ "\${READY}" -eq 1 ]; then
                         
-                        echo "2. Generando zap.yaml (Autenticación y Escaneo Completo)..."
-                        # Generamos el archivo YAML para ZAP, combinando la autenticación con la configuración de escaneo proporcionada
-                        cat > zap.yaml <<EOF_YAML
+                        echo "4. Generando zap.yaml (Autenticación y Escaneo Completo)..."
+                        # Generamos el archivo YAML para ZAP
+                        cat > zap.yaml <<'EOF_YAML'
 env:
   contexts:
   - name: auth-context
     urls:
-      - \${CURL_TARGET}
+      - http://127.0.0.1:5000
     authentication:
       method: formBasedAuthentication
       parameters:
-        loginPageUrl: \${CURL_TARGET}/login
-        # Usando 'username' y 'password' para el formulario de login
+        loginPageUrl: http://127.0.0.1:5000/login
         loginPostData: "username={%username%}&password={%password%}"
       verification:
-        # Busca el texto 'Welcome, user' en el dashboard para confirmar login exitoso
         method: response
+        # La página de dashboard contiene 'Welcome, user'
         loggedInRegex: 'Welcome, user' 
     users:
       - name: testuser
         credentials:
-          # Usando el usuario creado específicamente para ZAP
           username: testuser_zap
           password: TestPassword123
 jobs:
-# 1. Configuración de Escaneo Pasivo (del YAML proporcionado)
+# 1. Configuración de Escaneo Pasivo
 - type: passiveScan-config
   parameters:
     enableTags: false
@@ -247,7 +245,7 @@ jobs:
     user: testuser
     maxDuration: 2
     maxDepth: 5
-    url: \${CURL_TARGET}
+    url: http://127.0.0.1:5000
 # 3. Esperar Passive Scan
 - type: passiveScan-wait
   parameters:
@@ -257,9 +255,9 @@ jobs:
   parameters:
     context: auth-context
     user: testuser
-    maxDuration: 5 # Reducido, ajusta en producción
+    maxDuration: 5
     scanPolicy: Default Policy
-# 5. Resumen de Salida (del YAML proporcionado)
+# 5. Resumen de Salida
 - type: outputSummary
   parameters:
     format: json
@@ -278,8 +276,12 @@ jobs:
     reportTitle: ZAP Authenticated Active Scan Report
     template: traditional-json
 EOF_YAML
+                        
+                        echo "5. Contenido de zap.yaml generado:"
+                        cat zap.yaml
+                        echo "-----------------------------------------"
 
-                        echo "3. Ejecutando ZAP con Automation Framework..."
+                        echo "6. Ejecutando ZAP con Automation Framework..."
                         docker run --rm --network=host \
                             -v "\$(pwd)":/zap/wrk/:rw \
                             ghcr.io/zaproxy/zaproxy:stable \
