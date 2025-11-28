@@ -123,7 +123,7 @@ pipeline {
          * ========================== */
         stage('OWASP ZAP Active Scan') {
             
-            // PASO 1: CREAR ZAP.YAML USANDO writeFile (Necesita permisos de escritura en el workspace)
+            // PASO 1: CREAR ZAP.YAML USANDO writeFile
             steps {
                 echo "1. Creando zap.yaml usando writeFile..."
                 writeFile file: 'zap.yaml', text: """
@@ -135,8 +135,9 @@ env:
     authentication:
       method: formBasedAuthentication
       parameters:
-        loginPageUrl: ${APP_URL}/login
-        loginPostData: "username={%username%}&password={%password%}"
+        # CORREGIDO: Usar loginUrl y loginRequestData, no loginPageUrl y loginPostData
+        loginUrl: ${APP_URL}/login 
+        loginRequestData: "username={%username%}&password={%password%}"
       verification:
         method: response
         # La página de dashboard contiene 'Welcome, user'
@@ -169,12 +170,13 @@ jobs:
   parameters:
     context: auth-context
     user: testuser
-    maxDuration: 5
-    scanPolicy: Default Policy
+    # CORREGIDO: Usar maxScanDuration y eliminar parámetros no reconocidos
+    maxScanDuration: 5 
 # 5. Resumen de Salida
 - type: outputSummary
   parameters:
-    format: json
+    # CORREGIDO: Usar SHORT o LONG en lugar de 'json'
+    format: SHORT 
     summaryFile: /zap/wrk/zap_summary.json
 # 6. Generación de Reportes HTML y JSON
 - type: report
@@ -296,7 +298,7 @@ EOF_PYTHON_SCRIPT
                     if [ "\${READY}" -eq 1 ]; then
                         
                         echo "5. Ejecutando ZAP con Automation Framework..."
-                        # EJECUCIÓN CORREGIDA: Especifica el puerto 8090 para evitar "Address already in use"
+                        # Uso del puerto 8090 para evitar "Address already in use"
                         docker run --rm --network=host \
                             -v "\$(pwd)":/zap/wrk/:rw \
                             ghcr.io/zaproxy/zaproxy:stable \

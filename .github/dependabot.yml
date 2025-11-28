@@ -1,0 +1,15 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"   # requirements.txt está en la raíz
+    schedule:
+      interval: "daily"
+    commit-message:
+      prefix: "fix"
+      include: "scope"
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: "docker"
+    directory: "/"   # Dockerfile está en la raíz
+    schedule:
+      interval: "weekly"
