@@ -32,14 +32,11 @@ pipeline {
                     python3 -m venv venv
 
                     echo "Instalando dependencias..."
-                    # Activamos el venv para que pip instale las dependencias correctamente.
-                    . venv/bin/activate 
-                    pip install --upgrade pip
-                    pip install -r requirements.txt
+                    ./venv/bin/pip install --upgrade pip
+                    ./venv/bin/pip install -r requirements.txt
                 """
             }
         }
-
 
         /* ==========================
          * BANDIT
@@ -47,11 +44,9 @@ pipeline {
         stage('Bandit Security Scan') {
             steps {
                 sh """
-                    # Ejecutar desde el venv
-                    . venv/bin/activate
                     echo "Ejecutando Bandit..."
-                    bandit -r . -f json -o bandit-report.json || true
-                    bandit -r . -f html -o bandit-report.html || true
+                    ./venv/bin/bandit -r . -f json -o bandit-report.json || true
+                    ./venv/bin/bandit -r . -f html -o bandit-report.html || true
                 """
             }
             post {
@@ -61,8 +56,6 @@ pipeline {
             }
         }
 
-
-
         /* ==========================
          * SNYK CODE
          * ========================== */
@@ -70,7 +63,6 @@ pipeline {
             steps {
                 sh """
                     snyk auth ${SNYK_TOKEN}
-
                     echo "Ejecutando Snyk Code..."
                     snyk code test --json > snyk-code.json || true
                     snyk code test --sarif > snyk-code.sarif || true
@@ -82,7 +74,6 @@ pipeline {
                 }
             }
         }
-
 
         /* ==========================
          * SNYK DEPENDENCIAS
@@ -102,8 +93,6 @@ pipeline {
             }
         }
 
-
-
         /* ==========================
          * SNYK CONTENEDOR
          * ========================== */
@@ -111,7 +100,6 @@ pipeline {
             steps {
                 sh """
                     docker build -t ${DOCKER_IMAGE} .
-
                     snyk container test ${DOCKER_IMAGE} --json > snyk-container.json || true
                     snyk container test ${DOCKER_IMAGE} --sarif > snyk-container.sarif || true
                 """
@@ -123,74 +111,56 @@ pipeline {
             }
         }
 
-
-
         /* ==========================
-         * OWASP ZAP (CORREGIDO Y ROBUSTO)
+         * OWASP ZAP (CORREGIDO)
          * ========================== */
         stage('OWASP ZAP Baseline Scan') {
             steps {
                 sh """
-                    # 1. Iniciando Flask con el intérprete del venv (más robusto)
                     echo "Iniciando aplicación Flask temporal..."
-                    
-                    # Llamada directa a python del venv y captura del PID
-                    nohup venv/bin/python3 app.py > flask.log 2>&1 &
-                    FLASK_PID=\$! 
-                    echo "Flask PID: \$FLASK_PID"
-                    FLASK_READY="false" # Bandera para controlar la ejecución de ZAP
+                    nohup ./venv/bin/python app.py > flask.log 2>&1 &
+                    echo $! > flask.pid
 
-                    # 2. Bucle de espera robusto
                     echo "Esperando que Flask inicie (máximo 40 segundos)..."
                     CURL_TARGET="http://127.0.0.1:5000"
-                    
                     for i in {1..20}; do
-                        # curl -s verifica silenciosamente el acceso a la URL
-                        if curl -s \$CURL_TARGET >/dev/null; then 
-                            echo "Flask está corriendo después de \$((i * 2)) segundos."
-                            FLASK_READY="true"
+                        if curl -s "$CURL_TARGET" >/dev/null; then
+                            echo "Flask está corriendo después de $((i * 2)) segundos."
+                            READY=1
                             break
                         fi
-                        echo "Esperando... \$i"
+                        echo "Esperando... $i"
                         sleep 2
                     done
-                    
-                    # 3. Ejecución condicional de ZAP
-                    if [ "\$FLASK_READY" = "true" ]; then
-                        echo "Ajustando permisos..."
-                        chmod 777 \$(pwd) || true
-                        chmod 777 \$(pwd)/* || true
 
+                    if [ "${READY:-0}" -eq 1 ]; then
                         echo "Ejecutando ZAP..."
-                        # Se usa 127.0.0.1 para acceder al host
-                        docker run --rm --network=host \
-                            -v \$(pwd):/zap/wrk/:rw \
-                            ghcr.io/zaproxy/zaproxy:stable \
-                            zap-baseline.py \
-                            -t \$CURL_TARGET \
-                            -r zap_report.html \
-                            -J zap_report.json || true
+                        docker run --rm --network=host \\
+                            -v "$(pwd)":/zap/wrk/:rw \\
+                            ghcr.io/zaproxy/zaproxy:stable \\
+                            zap-baseline.py \\
+                            -t "$CURL_TARGET" \\
+                            -r /zap/wrk/zap_report.html \\
+                            -J /zap/wrk/zap_report.json || true
                     else
-                        echo "ADVERTENCIA: Flask no se inició correctamente o no respondió después de 40s. Saltando escaneo ZAP."
+                        echo "ADVERTENCIA: Flask no respondió en 40s. Saltando ZAP."
                     fi
                 """
             }
             post {
                 always {
                     sh """
-                        # 4. Limpieza (MANDATORIA)
-                        # Detiene el proceso de Flask que se inició en segundo plano.
-                        if [ -n "\$FLASK_PID" ]; then
-                            echo "Deteniendo proceso Flask con PID: \$FLASK_PID"
-                            kill "\$FLASK_PID" || true
+                        if [ -f flask.pid ]; then
+                            PID=\$(cat flask.pid)
+                            echo "Deteniendo Flask PID: \$PID"
+                            kill "\$PID" || true
+                            rm -f flask.pid
                         fi
                     """
                     archiveArtifacts artifacts: 'zap_report.*, flask.log', fingerprint: true
                 }
             }
         }
-
-
 
         /* ==========================
          * PUSH DOCKER
@@ -210,7 +180,6 @@ pipeline {
             }
         }
 
-
         /* ==========================
          * DEPLOY EN EC2
          * ========================== */
@@ -218,12 +187,11 @@ pipeline {
             steps {
                 sh """
                     chmod 400 ${EC2_KEY}
-
                     ssh -o StrictHostKeyChecking=no -i ${EC2_KEY} ${EC2_USER}@${EC2_IP} '
                         docker stop app || true
                         docker rm app || true
                         docker pull ${DOCKER_IMAGE}
-                        docker run -d --name app -p 80:5000 ${DOCKER_IMAGE}
+                        docker run -d --restart always --name app -p 80:5000 ${DOCKER_IMAGE}
                     '
                 """
             }
